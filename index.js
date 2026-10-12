@@ -25,7 +25,7 @@ const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
 if (!TOKEN) {
-    console.error("Falta o DISCORD_TOKEN no ficheiro .env");
+    console.error("Missing DISCORD_TOKEN in the .env file");
     process.exit(1);
 }
 
@@ -38,7 +38,7 @@ if (serviceAccountJson) {
     try {
         googleAuthOptions = { credentials: JSON.parse(serviceAccountJson) };
     } catch (error) {
-        console.error("GOOGLE_SERVICE_ACCOUNT_JSON não contém JSON válido.", error.message);
+        console.error("GOOGLE_SERVICE_ACCOUNT_JSON does not contain valid JSON.", error.message);
         process.exit(1);
     }
 } else {
@@ -87,7 +87,7 @@ async function migratePrecosLayout() {
             resource: { values: migrated }
         });
     }
-    console.log(`Folha Precos migrada para o novo layout (${migrated.length} espécies).`);
+    console.log(`Precos sheet migrated to the new layout (${migrated.length} species).`);
 }
 
 async function ensureSystemSheets() {
@@ -103,11 +103,11 @@ async function ensureSystemSheets() {
     await migratePrecosLayout();
     await sheetsClient.spreadsheets.values.update({
         spreadsheetId: SHEET_ID, range: "Precos!A1:G1", valueInputOption: "USER_ENTERED",
-        resource: { values: [["Nome", "Tek Pair", "Tek Bundle", "Tek Extra", "PayPal Pair", "PayPal Bundle", "PayPal Extra"]] }
+        resource: { values: [["Name", "Tek Pair", "Tek Bundle", "Tek Extra", "PayPal Pair", "PayPal Bundle", "PayPal Extra"]] }
     });
     await sheetsClient.spreadsheets.values.update({
         spreadsheetId: SHEET_ID, range: "Stock!A1:C1", valueInputOption: "USER_ENTERED",
-        resource: { values: [["Nome", "Bundles", "Estado"]] }
+        resource: { values: [["Name", "Bundles", "Status"]] }
     });
 }
 
@@ -178,7 +178,7 @@ async function getStockData() {
 
 async function updateStockSheet() {
     const data = await getStockData();
-    const values = [["Nome", "Bundles", "Estado"]];
+    const values = [["Name", "Bundles", "Status"]];
 
     for (const d of data) {
         values.push([d.name, d.bundles, stockBall(d.bundles)]);
@@ -214,7 +214,7 @@ async function getSheetId(sheetName) {
 // Apaga uma linha inteira (rowIndex é 0-based; 0 = cabeçalho)
 async function deleteRow(sheetName, rowIndex) {
     const sheetId = await getSheetId(sheetName);
-    if (sheetId === null) throw new Error(`Folha "${sheetName}" não encontrada.`);
+    if (sheetId === null) throw new Error(`Sheet "${sheetName}" not found.`);
 
     await sheetsClient.spreadsheets.batchUpdate({
         spreadsheetId: SHEET_ID,
@@ -255,7 +255,7 @@ async function dashboardPayload() {
     if (!species.length) {
         const embed = new EmbedBuilder()
             .setTitle("📦 TUGAS SHOP — Stock")
-            .setDescription("Ainda não há dinos registados. Usa `/adddino` para criar a primeira espécie.")
+            .setDescription("No dinos registered yet. Use `/adddino` to create the first species.")
             .setFooter({ text: DASHBOARD_MARKER });
         return { embeds: [embed], components: [] };
     }
@@ -270,8 +270,8 @@ async function dashboardPayload() {
         const selected = c.color === dashboardColor ? "➡️ " : "";
         return `${selected}**${c.color}** — ♂ ${c.male} · ♀ ${c.female}`;
     });
-    let description = lines.length ? lines.join("\n") : "Ainda não há cores. Usa `/addcolor` para adicionar uma cor com stock inicial a zero.";
-    if (description.length > 3800) description = description.slice(0, 3750) + "\n… (lista encurtada; usa o menu para selecionar uma cor)";
+    let description = lines.length ? lines.join("\n") : "No colors yet. Use `/addcolor` to add a color with starting stock at zero.";
+    if (description.length > 3800) description = description.slice(0, 3750) + "\n… (list shortened; use the menu to select a color)";
 
     const selectedColor = colors.find(c => c.color === dashboardColor);
     const selectedQty = selectedColor ? (dashboardGender === "m" ? selectedColor.male : selectedColor.female) : 0;
@@ -279,21 +279,21 @@ async function dashboardPayload() {
         .setTitle(`📦 TUGAS SHOP — ${dashboardSpecies}`)
         .setDescription(description)
         .addFields(
-            { name: "Pair — Tek", value: prices?.tek?.pair == null ? "Não definido" : `${prices.tek.pair} Tek`, inline: true },
-            { name: "Bundle — Tek", value: prices?.tek?.bundle == null ? "Não definido" : `${prices.tek.bundle} Tek`, inline: true },
-            { name: "Extra — Tek", value: prices?.tek?.dino == null ? "Não definido" : `${prices.tek.dino} Tek`, inline: true },
-            { name: "Pair — PayPal", value: prices?.paypal?.pair == null ? "Não definido" : `${prices.paypal.pair}€`, inline: true },
-            { name: "Bundle — PayPal", value: prices?.paypal?.bundle == null ? "Não definido" : `${prices.paypal.bundle}€`, inline: true },
-            { name: "Extra — PayPal", value: prices?.paypal?.dino == null ? "Não definido" : `${prices.paypal.dino}€`, inline: true },
-            { name: "Ajustar stock", value: selectedColor ? `Cor: **${selectedColor.color}**\nGénero: **${dashboardGender === "m" ? "♂ Macho" : "♀ Fêmea"}**\nQuantidade atual: **${selectedQty}**` : "Seleciona uma cor para ajustar o stock." }
+            { name: "Pair — Tek", value: prices?.tek?.pair == null ? "Not set" : `${prices.tek.pair} Tek`, inline: true },
+            { name: "Bundle — Tek", value: prices?.tek?.bundle == null ? "Not set" : `${prices.tek.bundle} Tek`, inline: true },
+            { name: "Extra — Tek", value: prices?.tek?.dino == null ? "Not set" : `${prices.tek.dino} Tek`, inline: true },
+            { name: "Pair — PayPal", value: prices?.paypal?.pair == null ? "Not set" : `${prices.paypal.pair}€`, inline: true },
+            { name: "Bundle — PayPal", value: prices?.paypal?.bundle == null ? "Not set" : `${prices.paypal.bundle}€`, inline: true },
+            { name: "Extra — PayPal", value: prices?.paypal?.dino == null ? "Not set" : `${prices.paypal.dino}€`, inline: true },
+            { name: "Adjust stock", value: selectedColor ? `Color: **${selectedColor.color}**\nGender: **${dashboardGender === "m" ? "♂ Male" : "♀ Female"}**\nCurrent quantity: **${selectedQty}**` : "Select a color to adjust the stock." }
         )
-        .setFooter({ text: `${DASHBOARD_MARKER} • Atualização automática a cada 30 minutos e após alterações de stock` });
+        .setFooter({ text: `${DASHBOARD_MARKER} • Auto-refreshes every 30 minutes and after stock changes` });
 
     const rows = [];
     rows.push(new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
             .setCustomId("dash_species")
-            .setPlaceholder("Seleciona um dino")
+            .setPlaceholder("Select a dino")
             .addOptions(species.slice(0, 25).map(name => ({ label: name.slice(0, 100), value: name, default: name === dashboardSpecies })))
     ));
 
@@ -301,7 +301,7 @@ async function dashboardPayload() {
         rows.push(new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
                 .setCustomId("dash_color")
-                .setPlaceholder("Seleciona uma cor")
+                .setPlaceholder("Select a color")
                 .addOptions(colors.slice(0, 25).map(c => ({
                     label: c.color.slice(0, 100),
                     value: c.color,
@@ -312,8 +312,8 @@ async function dashboardPayload() {
     }
 
     rows.push(new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("dash_gender_m").setLabel("♂ Macho").setStyle(dashboardGender === "m" ? ButtonStyle.Success : ButtonStyle.Secondary).setDisabled(!selectedColor),
-        new ButtonBuilder().setCustomId("dash_gender_f").setLabel("♀ Fêmea").setStyle(dashboardGender === "f" ? ButtonStyle.Success : ButtonStyle.Secondary).setDisabled(!selectedColor)
+        new ButtonBuilder().setCustomId("dash_gender_m").setLabel("♂ Male").setStyle(dashboardGender === "m" ? ButtonStyle.Success : ButtonStyle.Secondary).setDisabled(!selectedColor),
+        new ButtonBuilder().setCustomId("dash_gender_f").setLabel("♀ Female").setStyle(dashboardGender === "f" ? ButtonStyle.Success : ButtonStyle.Secondary).setDisabled(!selectedColor)
     ));
     rows.push(new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("dash_add_1").setLabel("+1").setStyle(ButtonStyle.Success).setDisabled(!selectedColor),
@@ -338,7 +338,7 @@ async function refreshDashboard() {
         const channel = guild.channels.cache.find(c =>
             c.type === ChannelType.GuildText && c.name.toLowerCase().includes(DASHBOARD_CHANNEL_NAME));
         if (!channel) {
-            console.warn("Canal da dashboard não encontrado. Cria um canal com nome como ⛔│「dashboard」.");
+            console.warn("Dashboard channel not found. Create a channel with a name like ⛔│「dashboard」.");
             return;
         }
 
@@ -354,7 +354,7 @@ async function refreshDashboard() {
             dashboardMessageId = message.id;
         }
     } catch (err) {
-        console.error("Erro ao atualizar a dashboard de stock:", err);
+        console.error("Error refreshing the stock dashboard:", err);
     } finally {
         dashboardRefreshRunning = false;
     }
@@ -363,7 +363,7 @@ async function refreshDashboard() {
 async function handleDashboardComponent(i) {
     if (!i.customId?.startsWith("dash_")) return false;
     if (!isStaff(i)) {
-        await i.reply({ content: "Apenas staff pode alterar ou navegar na dashboard de stock.", flags: MessageFlags.Ephemeral });
+        await i.reply({ content: "Only staff can change or browse the stock dashboard.", flags: MessageFlags.Ephemeral });
         return true;
     }
 
@@ -389,11 +389,11 @@ async function handleDashboardComponent(i) {
 
         const match = i.customId.match(/^dash_(add|sub)_(1|5|10)$/);
         if (!match) {
-            await i.reply({ content: "Ação da dashboard desconhecida.", flags: MessageFlags.Ephemeral });
+            await i.reply({ content: "Unknown dashboard action.", flags: MessageFlags.Ephemeral });
             return true;
         }
         if (!dashboardSpecies || !dashboardColor) {
-            await i.reply({ content: "Seleciona primeiro um dino e uma cor.", flags: MessageFlags.Ephemeral });
+            await i.reply({ content: "Select a dino and a color first.", flags: MessageFlags.Ephemeral });
             return true;
         }
 
@@ -405,14 +405,14 @@ async function handleDashboardComponent(i) {
         });
         const rows = res.data.values || [];
         const rowIndex = rows.findIndex((r, idx) => idx > 0 && (r[0] || "").trim() === dashboardColor);
-        if (rowIndex < 1) throw new Error(`Não encontrei a cor ${dashboardColor} em ${dashboardSpecies}.`);
+        if (rowIndex < 1) throw new Error(`Color ${dashboardColor} not found in ${dashboardSpecies}.`);
 
         const row = rows[rowIndex];
         const male = parseInt(row[1] || "0", 10) || 0;
         const female = parseInt(row[2] || "0", 10) || 0;
         const current = dashboardGender === "m" ? male : female;
         const next = current + delta;
-        if (next < 0) throw new Error(`Stock insuficiente: só existem ${current} unidades para retirar.`);
+        if (next < 0) throw new Error(`Not enough stock: only ${current} units available to remove.`);
 
         await sheetsClient.spreadsheets.values.update({
             spreadsheetId: SHEET_ID,
@@ -423,7 +423,7 @@ async function handleDashboardComponent(i) {
         await updateStockSheet();
         await refreshDashboard();
     } catch (err) {
-        console.error("Erro no controlo de stock da dashboard:", err);
+        console.error("Error in dashboard stock control:", err);
         if (i.deferred || i.replied) await i.followUp({ content: `🔴 ${err.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
         else await i.reply({ content: `🔴 ${err.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
@@ -437,86 +437,86 @@ async function registerCommands() {
     const commands = [
         new SlashCommandBuilder()
             .setName("adddino")
-            .setDescription("Adicionar nova espécie")
-            .addStringOption(o => o.setName("nome").setDescription("Nome da espécie").setRequired(true))
-            .addNumberOption(o => o.setName("pair").setDescription("Preço do Pair (1♂ + 1♀ de uma cor) em Tek").setRequired(true).setMinValue(0))
-            .addNumberOption(o => o.setName("bundle").setDescription("Preço do Bundle (1♂ + 1♀ de CADA cor) em Tek").setRequired(true).setMinValue(0))
-            .addNumberOption(o => o.setName("extra").setDescription("Preço por dino extra em Tek").setRequired(true).setMinValue(0))
-            .addNumberOption(o => o.setName("pair_paypal").setDescription("Preço do Pair em PayPal (€)").setRequired(true).setMinValue(0))
-            .addNumberOption(o => o.setName("bundle_paypal").setDescription("Preço do Bundle em PayPal (€)").setRequired(true).setMinValue(0))
-            .addNumberOption(o => o.setName("extra_paypal").setDescription("Preço por dino extra em PayPal (€)").setRequired(true).setMinValue(0)),
+            .setDescription("Add a new species")
+            .addStringOption(o => o.setName("name").setDescription("Species name").setRequired(true))
+            .addNumberOption(o => o.setName("pair").setDescription("Pair price (1♂ + 1♀ of one color) in Tek").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("bundle").setDescription("Bundle price (1♂ + 1♀ of EACH color) in Tek").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("extra").setDescription("Extra dino price in Tek").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("pair_paypal").setDescription("Pair price in PayPal (€)").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("bundle_paypal").setDescription("Bundle price in PayPal (€)").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("extra_paypal").setDescription("Extra dino price in PayPal (€)").setRequired(true).setMinValue(0)),
 
         new SlashCommandBuilder()
             .setName("addcolor")
-            .setDescription("Adicionar cor a uma espécie")
+            .setDescription("Add a color to a species")
             .addStringOption(o =>
-                o.setName("especie")
-                    .setDescription("Espécie")
+                o.setName("species")
+                    .setDescription("Species")
                     .setRequired(true)
                     .setAutocomplete(true))
-            .addStringOption(o => o.setName("color").setDescription("Nome da cor").setRequired(true)),
+            .addStringOption(o => o.setName("color").setDescription("Color name").setRequired(true)),
 
         new SlashCommandBuilder()
             .setName("stock")
-            .setDescription("Ver o stock de todas as espécies"),
+            .setDescription("View the stock of all species"),
 
         new SlashCommandBuilder()
             .setName("ticketpanel")
-            .setDescription("Publicar neste canal o painel para abrir tickets"),
+            .setDescription("Post the ticket panel in this channel"),
 
         new SlashCommandBuilder()
             .setName("deldino")
-            .setDescription("Eliminar uma espécie (apaga a folha e o preço)")
+            .setDescription("Delete a species (removes its sheet and prices)")
             .addStringOption(o =>
-                o.setName("especie")
-                    .setDescription("Espécie a eliminar")
+                o.setName("species")
+                    .setDescription("Species to delete")
                     .setRequired(true)
                     .setAutocomplete(true)),
 
         new SlashCommandBuilder()
             .setName("delcolor")
-            .setDescription("Eliminar uma cor de uma espécie")
+            .setDescription("Delete a color from a species")
             .addStringOption(o =>
-                o.setName("especie")
-                    .setDescription("Espécie")
+                o.setName("species")
+                    .setDescription("Species")
                     .setRequired(true)
                     .setAutocomplete(true))
             .addStringOption(o =>
                 o.setName("color")
-                    .setDescription("Cor a eliminar")
+                    .setDescription("Color to delete")
                     .setRequired(true)
                     .setAutocomplete(true)),
 
         new SlashCommandBuilder()
             .setName("editdino")
-            .setDescription("Editar uma espécie (nome e/ou preços)")
+            .setDescription("Edit a species (name and/or prices)")
             .addStringOption(o =>
-                o.setName("especie")
-                    .setDescription("Espécie a editar")
+                o.setName("species")
+                    .setDescription("Species to edit")
                     .setRequired(true)
                     .setAutocomplete(true))
-            .addStringOption(o => o.setName("novo_nome").setDescription("Novo nome da espécie"))
-            .addNumberOption(o => o.setName("pair").setDescription("Novo preço do Pair em Tek").setMinValue(0))
-            .addNumberOption(o => o.setName("bundle").setDescription("Novo preço do Bundle em Tek").setMinValue(0))
-            .addNumberOption(o => o.setName("extra").setDescription("Novo preço por dino extra em Tek").setMinValue(0))
-            .addNumberOption(o => o.setName("pair_paypal").setDescription("Novo preço do Pair em PayPal (€)").setMinValue(0))
-            .addNumberOption(o => o.setName("bundle_paypal").setDescription("Novo preço do Bundle em PayPal (€)").setMinValue(0))
-            .addNumberOption(o => o.setName("extra_paypal").setDescription("Novo preço por dino extra em PayPal (€)").setMinValue(0)),
+            .addStringOption(o => o.setName("new_name").setDescription("New species name"))
+            .addNumberOption(o => o.setName("pair").setDescription("New Pair price in Tek").setMinValue(0))
+            .addNumberOption(o => o.setName("bundle").setDescription("New Bundle price in Tek").setMinValue(0))
+            .addNumberOption(o => o.setName("extra").setDescription("New extra dino price in Tek").setMinValue(0))
+            .addNumberOption(o => o.setName("pair_paypal").setDescription("New Pair price in PayPal (€)").setMinValue(0))
+            .addNumberOption(o => o.setName("bundle_paypal").setDescription("New Bundle price in PayPal (€)").setMinValue(0))
+            .addNumberOption(o => o.setName("extra_paypal").setDescription("New extra dino price in PayPal (€)").setMinValue(0)),
 
         new SlashCommandBuilder()
             .setName("editcolor")
-            .setDescription("Renomear uma cor de uma espécie; stock ajustado pela dashboard")
+            .setDescription("Rename a color of a species; stock is adjusted via the dashboard")
             .addStringOption(o =>
-                o.setName("especie")
-                    .setDescription("Espécie")
+                o.setName("species")
+                    .setDescription("Species")
                     .setRequired(true)
                     .setAutocomplete(true))
             .addStringOption(o =>
                 o.setName("color")
-                    .setDescription("Cor a editar")
+                    .setDescription("Color to edit")
                     .setRequired(true)
                     .setAutocomplete(true))
-            .addStringOption(o => o.setName("novo_nome").setDescription("Novo nome da cor"))
+            .addStringOption(o => o.setName("new_name").setDescription("New color name"))
     ].map(cmd => cmd.toJSON());
 
     const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -526,7 +526,7 @@ async function registerCommands() {
         { body: commands }
     );
 
-    console.log("Slash commands registados!");
+    console.log("Slash commands registered!");
 }
 
 /* -----------------------------------------------------------
@@ -541,11 +541,11 @@ client.on("interactionCreate", async (interaction) => {
 
             let list = [];
 
-            if (focusedOption.name === "especie") {
+            if (focusedOption.name === "species") {
                 list = await getSpeciesSheets();
             } else if (focusedOption.name === "color" && ["delcolor", "editcolor"].includes(interaction.commandName)) {
                 // Só mostra cores se a espécie já tiver sido escolhida
-                const especie = interaction.options.getString("especie");
+                const especie = interaction.options.getString("species");
                 if (especie) {
                     const species = await getSpeciesSheets();
                     if (species.includes(especie)) list = await getColorsForSpecies(especie);
@@ -574,7 +574,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const data = await getStockData();
             if (data.length === 0) {
-                return interaction.editReply("Ainda não há espécies registadas.");
+                return interaction.editReply("No species registered yet.");
             }
 
             const lines = data.map(d => `${stockBall(d.bundles)}  **${d.name}**`);
@@ -584,14 +584,14 @@ client.on("interactionCreate", async (interaction) => {
             const embed = new EmbedBuilder()
                 .setTitle("📦 Stock")
                 .setDescription(description)
-                .setFooter({ text: "🟢 Disponível  🟡 2 bundles  🟠 Último bundle  🔴 Sem stock" });
+                .setFooter({ text: "🟢 Available  🟡 2 bundles  🟠 Last bundle  🔴 Out of stock" });
 
             return interaction.editReply({ embeds: [embed] });
         }
 
         if (!isStaff(interaction)) {
             return interaction.reply({
-                content: "Apenas staff pode usar este comando.",
+                content: "Only staff can use this command.",
                 flags: MessageFlags.Ephemeral
             });
         }
@@ -600,7 +600,7 @@ client.on("interactionCreate", async (interaction) => {
         if (interaction.commandName === "adddino") {
             await interaction.deferReply();
 
-            const nome = interaction.options.getString("nome").trim();
+            const nome = interaction.options.getString("name").trim();
             const pair = interaction.options.getNumber("pair");
             const bundle = interaction.options.getNumber("bundle");
             const extra = interaction.options.getNumber("extra");
@@ -609,13 +609,13 @@ client.on("interactionCreate", async (interaction) => {
             const extraPP = interaction.options.getNumber("extra_paypal");
 
             if (!nome || nome.length > 100 || /[\[\]\*\?:\/\\]/.test(nome)) {
-                return interaction.editReply("🔴 Nome inválido. Não uses `[ ] * ? : / \\` e máximo 100 caracteres.");
+                return interaction.editReply("🔴 Invalid name. Don't use `[ ] * ? : / \\` and max 100 characters.");
             }
 
             const existing = await getSpeciesSheets();
             if (existing.some(s => s.toLowerCase() === nome.toLowerCase()) ||
                 IGNORED_SHEETS.some(s => s.toLowerCase() === nome.toLowerCase())) {
-                return interaction.editReply(`🔴 A espécie **${nome}** já existe.`);
+                return interaction.editReply(`🔴 The species **${nome}** already exists.`);
             }
 
             // Criar folha
@@ -643,7 +643,7 @@ client.on("interactionCreate", async (interaction) => {
             await updateStockSheet();
 
             return interaction.editReply(
-                `🟢 Espécie **${nome}** criada com sucesso!\n` +
+                `🟢 Species **${nome}** created successfully!\n` +
                 `Tek — Pair: **${pair}** · Bundle: **${bundle}** · Extra: **${extra}**\n` +
                 `PayPal — Pair: **${pairPP}€** · Bundle: **${bundlePP}€** · Extra: **${extraPP}€**`
             );
@@ -653,18 +653,18 @@ client.on("interactionCreate", async (interaction) => {
         if (interaction.commandName === "addcolor") {
             await interaction.deferReply();
 
-            const especie = interaction.options.getString("especie");
+            const especie = interaction.options.getString("species");
             const color = interaction.options.getString("color").trim();
 
             const species = await getSpeciesSheets();
             if (!species.includes(especie)) {
-                return interaction.editReply(`🔴 A espécie **${especie}** não existe. Escolhe uma da lista.`);
+                return interaction.editReply(`🔴 The species **${especie}** doesn't exist. Pick one from the list.`);
             }
-            if (!color || color.length > 100) return interaction.editReply("🔴 Nome de cor inválido (máximo 100 caracteres).");
+            if (!color || color.length > 100) return interaction.editReply("🔴 Invalid color name (max 100 characters).");
 
             const existingColors = await getColorsForSpecies(especie);
             if (existingColors.some(c => c.toLowerCase() === color.toLowerCase())) {
-                return interaction.editReply(`🔴 A cor **${color}** já existe em **${especie}**.`);
+                return interaction.editReply(`🔴 The color **${color}** already exists in **${especie}**.`);
             }
 
             // A cor é criada a zero; a staff ajusta o stock pelos botões da dashboard.
@@ -680,34 +680,34 @@ client.on("interactionCreate", async (interaction) => {
             await updateStockSheet();
             await refreshDashboard();
 
-            return interaction.editReply(`🟢 Cor **${color}** adicionada a **${especie}** com stock a zero. Usa a dashboard para adicionar quantidade com os botões.`);
+            return interaction.editReply(`🟢 Color **${color}** added to **${especie}** with zero stock. Use the dashboard buttons to add quantity.`);
         }
 
         /* ---------- /deldino ---------- */
         if (interaction.commandName === "deldino") {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-            const especie = interaction.options.getString("especie");
+            const especie = interaction.options.getString("species");
 
             const species = await getSpeciesSheets();
             if (!species.includes(especie)) {
-                return interaction.editReply(`🔴 A espécie **${especie}** não existe.`);
+                return interaction.editReply(`🔴 The species **${especie}** doesn't exist.`);
             }
 
             // Pedido de confirmação (apaga a folha inteira!)
             const buttons = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                     .setCustomId("confirm_deldino")
-                    .setLabel("Eliminar")
+                    .setLabel("Delete")
                     .setStyle(ButtonStyle.Danger),
                 new ButtonBuilder()
                     .setCustomId("cancel_deldino")
-                    .setLabel("Cancelar")
+                    .setLabel("Cancel")
                     .setStyle(ButtonStyle.Secondary)
             );
 
             const msg = await interaction.editReply({
-                content: `⚠️ Tens a certeza que queres eliminar **${especie}**?\nIsto apaga a folha com todas as cores e remove o preço. **Não dá para desfazer.**`,
+                content: `⚠️ Are you sure you want to delete **${especie}**?\nThis deletes the sheet with all colors and removes the prices. **This cannot be undone.**`,
                 components: [buttons]
             });
 
@@ -718,18 +718,18 @@ client.on("interactionCreate", async (interaction) => {
                     time: 30_000
                 });
             } catch {
-                return interaction.editReply({ content: "⏱️ Tempo esgotado. Nada foi eliminado.", components: [] });
+                return interaction.editReply({ content: "⏱️ Timed out. Nothing was deleted.", components: [] });
             }
 
             if (click.customId !== "confirm_deldino") {
-                return click.update({ content: "Cancelado. Nada foi eliminado.", components: [] });
+                return click.update({ content: "Cancelled. Nothing was deleted.", components: [] });
             }
 
-            await click.update({ content: "A eliminar...", components: [] });
+            await click.update({ content: "Deleting...", components: [] });
 
             // 1) Apagar a folha da espécie
             const sheetId = await getSheetId(especie);
-            if (sheetId === null) throw new Error(`Folha "${especie}" não encontrada.`);
+            if (sheetId === null) throw new Error(`Sheet "${especie}" not found.`);
 
             await sheetsClient.spreadsheets.batchUpdate({
                 spreadsheetId: SHEET_ID,
@@ -748,19 +748,19 @@ client.on("interactionCreate", async (interaction) => {
             // 3) Atualizar Stock
             await updateStockSheet();
 
-            return interaction.editReply(`🟢 Espécie **${especie}** eliminada com sucesso!`);
+            return interaction.editReply(`🟢 Species **${especie}** deleted successfully!`);
         }
 
         /* ---------- /delcolor ---------- */
         if (interaction.commandName === "delcolor") {
             await interaction.deferReply();
 
-            const especie = interaction.options.getString("especie");
+            const especie = interaction.options.getString("species");
             const color = interaction.options.getString("color").trim();
 
             const species = await getSpeciesSheets();
             if (!species.includes(especie)) {
-                return interaction.editReply(`🔴 A espécie **${especie}** não existe. Escolhe uma da lista.`);
+                return interaction.editReply(`🔴 The species **${especie}** doesn't exist. Pick one from the list.`);
             }
 
             const res = await sheetsClient.spreadsheets.values.get({
@@ -779,21 +779,21 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             if (rowIndex === -1) {
-                return interaction.editReply(`🔴 A cor **${color}** não existe em **${especie}**.`);
+                return interaction.editReply(`🔴 The color **${color}** doesn't exist in **${especie}**.`);
             }
 
             await deleteRow(especie, rowIndex);
             await updateStockSheet();
 
-            return interaction.editReply(`🟢 Cor **${color}** eliminada de **${especie}**!`);
+            return interaction.editReply(`🟢 Color **${color}** deleted from **${especie}**!`);
         }
 
         /* ---------- /editdino ---------- */
         if (interaction.commandName === "editdino") {
             await interaction.deferReply();
 
-            const especie = interaction.options.getString("especie");
-            const novoNomeRaw = interaction.options.getString("novo_nome");
+            const especie = interaction.options.getString("species");
+            const novoNomeRaw = interaction.options.getString("new_name");
             const novoNome = novoNomeRaw ? novoNomeRaw.trim() : null;
             const pair = interaction.options.getNumber("pair");
             const bundle = interaction.options.getNumber("bundle");
@@ -804,24 +804,24 @@ client.on("interactionCreate", async (interaction) => {
             const extraPP = interaction.options.getNumber("extra_paypal");
 
             if (!novoNome && pair === null && bundle === null && extra === null && pairPP === null && bundlePP === null && extraPP === null) {
-                return interaction.editReply("🔴 Indica pelo menos uma coisa para alterar: `novo_nome`, `pair`, `bundle`, `extra`, `pair_paypal`, `bundle_paypal` ou `extra_paypal`.");
+                return interaction.editReply("🔴 Provide at least one thing to change: `new_name`, `pair`, `bundle`, `extra`, `pair_paypal`, `bundle_paypal` or `extra_paypal`.");
             }
 
             const species = await getSpeciesSheets();
             if (!species.includes(especie)) {
-                return interaction.editReply(`🔴 A espécie **${especie}** não existe. Escolhe uma da lista.`);
+                return interaction.editReply(`🔴 The species **${especie}** doesn't exist. Pick one from the list.`);
             }
 
             const renaming = novoNome && novoNome !== especie;
 
             if (renaming) {
                 if (novoNome.length > 100 || /[\[\]\*\?:\/\\]/.test(novoNome)) {
-                    return interaction.editReply("🔴 Nome inválido. Não uses `[ ] * ? : / \\` e máximo 100 caracteres.");
+                    return interaction.editReply("🔴 Invalid name. Don't use `[ ] * ? : / \\` and max 100 characters.");
                 }
                 const lower = novoNome.toLowerCase();
                 if (species.some(s => s.toLowerCase() === lower && s !== especie) ||
                     IGNORED_SHEETS.some(s => s.toLowerCase() === lower)) {
-                    return interaction.editReply(`🔴 Já existe uma espécie com o nome **${novoNome}**.`);
+                    return interaction.editReply(`🔴 A species named **${novoNome}** already exists.`);
                 }
             }
 
@@ -837,7 +837,7 @@ client.on("interactionCreate", async (interaction) => {
             // 1) Renomear a folha
             if (renaming) {
                 const sheetId = await getSheetId(especie);
-                if (sheetId === null) throw new Error(`Folha "${especie}" não encontrada.`);
+                if (sheetId === null) throw new Error(`Sheet "${especie}" not found.`);
 
                 await sheetsClient.spreadsheets.batchUpdate({
                     spreadsheetId: SHEET_ID,
@@ -885,8 +885,8 @@ client.on("interactionCreate", async (interaction) => {
             await updateStockSheet();
 
             return interaction.editReply(
-                `🟢 Espécie **${finalName}** atualizada!` +
-                (renaming ? `\nNome: ${especie} → **${finalName}**` : "") +
+                `🟢 Species **${finalName}** updated!` +
+                (renaming ? `\nName: ${especie} → **${finalName}**` : "") +
                 (pair !== null ? `\nPair Tek: **${pair}**` : "") +
                 (bundle !== null ? `\nBundle Tek: **${bundle}**` : "") +
                 (extra !== null ? `\nExtra Tek: **${extra}**` : "") +
@@ -900,17 +900,17 @@ client.on("interactionCreate", async (interaction) => {
         if (interaction.commandName === "editcolor") {
             await interaction.deferReply();
 
-            const especie = interaction.options.getString("especie");
+            const especie = interaction.options.getString("species");
             const color = interaction.options.getString("color").trim();
-            const novoNomeRaw = interaction.options.getString("novo_nome");
+            const novoNomeRaw = interaction.options.getString("new_name");
             const novoNome = novoNomeRaw ? novoNomeRaw.trim() : null;
             if (!novoNome) {
-                return interaction.editReply("🔴 Indica o `novo_nome` da cor. Para alterar quantidades, usa os botões da dashboard.");
+                return interaction.editReply("🔴 Provide the color's `new_name`. To change quantities, use the dashboard buttons.");
             }
 
             const species = await getSpeciesSheets();
             if (!species.includes(especie)) {
-                return interaction.editReply(`🔴 A espécie **${especie}** não existe. Escolhe uma da lista.`);
+                return interaction.editReply(`🔴 The species **${especie}** doesn't exist. Pick one from the list.`);
             }
 
             const res = await sheetsClient.spreadsheets.values.get({
@@ -929,7 +929,7 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             if (rowIndex === -1) {
-                return interaction.editReply(`🔴 A cor **${color}** não existe em **${especie}**.`);
+                return interaction.editReply(`🔴 The color **${color}** doesn't exist in **${especie}**.`);
             }
 
             const currentRow = rows[rowIndex];
@@ -939,7 +939,7 @@ client.on("interactionCreate", async (interaction) => {
                 const clash = rows.some((r, i) => i > 0 && i !== rowIndex &&
                     (r[0] || "").trim().toLowerCase() === novoNome.toLowerCase());
                 if (clash) {
-                    return interaction.editReply(`🔴 Já existe uma cor **${novoNome}** em **${especie}**.`);
+                    return interaction.editReply(`🔴 A color **${novoNome}** already exists in **${especie}**.`);
                 }
             }
 
@@ -955,21 +955,21 @@ client.on("interactionCreate", async (interaction) => {
             if (dashboardSpecies === especie && dashboardColor === currentName) dashboardColor = finalName;
             await updateStockSheet();
 
-            return interaction.editReply(`🟢 Cor **${currentName}** de **${especie}** renomeada para **${finalName}**. As quantidades são alteradas na dashboard.`);
+            return interaction.editReply(`🟢 Color **${currentName}** of **${especie}** renamed to **${finalName}**. Quantities are changed on the dashboard.`);
         }
 
         /* ---------- /ticketpanel ---------- */
         if (interaction.commandName === "ticketpanel") {
             await publishTicketPanel(interaction.channel);
-            return interaction.reply({ content: "🟢 Painel publicado.", flags: MessageFlags.Ephemeral });
+            return interaction.reply({ content: "🟢 Panel posted.", flags: MessageFlags.Ephemeral });
         }
     } catch (err) {
-        console.error("Erro na interação:", err);
+        console.error("Interaction error:", err);
 
         // Autocomplete não pode receber mensagem de texto
         if (interaction.isAutocomplete()) return;
 
-        const msg = `🔴 Erro: ${err.message}`;
+        const msg = `🔴 Error: ${err.message}`;
         try {
             // Em botões/menus não editamos a mensagem (perdia o carrinho)
             if (interaction.isMessageComponent()) {
@@ -985,7 +985,7 @@ client.on("interactionCreate", async (interaction) => {
                 await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
             }
         } catch (e) {
-            console.error("Não foi possível responder ao erro:", e);
+            console.error("Could not reply with the error:", e);
         }
     }
 });
@@ -1034,7 +1034,7 @@ async function getPrices(species) {
 
 function priceText(prices, method, kind) {
     const v = prices?.[method]?.[kind];
-    return v === null || v === undefined ? "⚠️ não definido" : money(method, v);
+    return v === null || v === undefined ? "⚠️ not set" : money(method, v);
 }
 
 async function getColorStock(species) {
@@ -1078,7 +1078,7 @@ async function calcCart(st) {
 
         if (unit === null || unit === undefined) {
             errors.push(it.species);
-            lines.push(`${label} — ⚠️ preço ${PAY_LABEL[st.payment]} não definido`);
+            lines.push(`${label} — ⚠️ ${PAY_LABEL[st.payment]} price not set`);
             continue;
         }
 
@@ -1092,20 +1092,20 @@ async function calcCart(st) {
 
 /* ---------- Ecrãs (mensagens com botões/menus) ---------- */
 const cancelButton = () =>
-    new ButtonBuilder().setCustomId("t_cancel").setLabel("Cancelar").setStyle(ButtonStyle.Secondary);
+    new ButtonBuilder().setCustomId("t_cancel").setLabel("Cancel").setStyle(ButtonStyle.Secondary);
 
 const backButton = () =>
-    new ButtonBuilder().setCustomId("t_more").setLabel("⬅️ Voltar").setStyle(ButtonStyle.Secondary);
+    new ButtonBuilder().setCustomId("t_more").setLabel("⬅️ Back").setStyle(ButtonStyle.Secondary);
 
 const closeRow = () =>
     new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("t_close").setLabel("Fechar").setEmoji("🔒").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId("t_close").setLabel("Close").setEmoji("🔒").setStyle(ButtonStyle.Danger)
     );
 
 function paymentScreen() {
     return {
         content: "",
-        embeds: [new EmbedBuilder().setTitle("💳 Método de pagamento").setDescription("Como queres pagar?")],
+        embeds: [new EmbedBuilder().setTitle("💳 Payment method").setDescription("How would you like to pay?")],
         components: [new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId("t_pay_tek").setLabel("Tek").setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId("t_pay_paypal").setLabel("PayPal").setStyle(ButtonStyle.Primary),
@@ -1118,8 +1118,8 @@ function typeScreen(st) {
     return {
         content: "",
         embeds: [new EmbedBuilder()
-            .setTitle("🛒 O que queres comprar?")
-            .setDescription(`Pagamento: **${PAY_LABEL[st.payment]}**`)],
+            .setTitle("🛒 What would you like to buy?")
+            .setDescription(`Payment: **${PAY_LABEL[st.payment]}**`)],
         components: [new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId("t_type_bundle").setLabel("Bundle").setEmoji("📦").setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId("t_type_dino").setLabel("Dino").setEmoji("🦖").setStyle(ButtonStyle.Primary),
@@ -1133,7 +1133,7 @@ async function speciesScreen(st, warning) {
 
     const embed = new EmbedBuilder()
         .setTitle(st.mode === "bundle" ? "📦 Bundle" : "🦖 Dino")
-        .setDescription(species.length ? "Escolhe a espécie:" : "Ainda não há espécies disponíveis.");
+        .setDescription(species.length ? "Choose the species:" : "No species available yet.");
     if (warning) embed.setFooter({ text: warning });
 
     const components = [];
@@ -1141,7 +1141,7 @@ async function speciesScreen(st, warning) {
         components.push(new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
                 .setCustomId("t_species")
-                .setPlaceholder("Escolhe a espécie")
+                .setPlaceholder("Choose the species")
                 .addOptions(species.map(s => ({ label: s, value: s })))
         ));
     }
@@ -1152,14 +1152,14 @@ async function speciesScreen(st, warning) {
 
 async function bundleScreen(st) {
     const bundles = await getBundlesForSpecies(st.species);
-    if (bundles <= 0) return speciesScreen(st, `⚠️ ${st.species} não tem bundles disponíveis.`);
+    if (bundles <= 0) return speciesScreen(st, `⚠️ ${st.species} has no bundles available.`);
 
     const prices = await getPrices(st.species);
     const max = Math.min(bundles, 25);
 
     const menu = new StringSelectMenuBuilder()
         .setCustomId("t_qty")
-        .setPlaceholder("Quantos bundles?")
+        .setPlaceholder("How many bundles?")
         .addOptions(Array.from({ length: max }, (_, n) => ({
             label: `${n + 1} bundle${n ? "s" : ""}`,
             value: String(n + 1)
@@ -1170,8 +1170,8 @@ async function bundleScreen(st) {
         embeds: [new EmbedBuilder()
             .setTitle(`📦 Bundle — ${st.species}`)
             .setDescription(
-                `Disponíveis: **${bundles}** ${stockBall(bundles)}\n` +
-                `Preço por bundle: **${priceText(prices, st.payment, "bundle")}**`
+                `Available: **${bundles}** ${stockBall(bundles)}\n` +
+                `Price per bundle: **${priceText(prices, st.payment, "bundle")}**`
             )],
         components: [
             new ActionRowBuilder().addComponents(menu),
@@ -1184,11 +1184,11 @@ function bundleContinueScreen(st) {
     return {
         content: "",
         embeds: [new EmbedBuilder()
-            .setTitle("📦 Bundle adicionado")
-            .setDescription("Pretendes realizar mais alguma compra?")],
+            .setTitle("📦 Bundle added")
+            .setDescription("Would you like to make another purchase?")],
         components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId("t_buy_more").setLabel("Sim, comprar mais").setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId("t_no_more").setLabel("Não, continuar").setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId("t_buy_more").setLabel("Yes, buy more").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId("t_no_more").setLabel("No, continue").setStyle(ButtonStyle.Success),
             cancelButton()
         )]
     };
@@ -1202,8 +1202,8 @@ async function colorScreen(st) {
     const available = stock.filter(c => c.male > 0 || c.female > 0).slice(0, 25);
 
     const embed = new EmbedBuilder()
-        .setTitle(`🦖 ${st.species} — Stock por cor`)
-        .setDescription(lines.length ? lines.join("\n") : "Sem cores registadas.")
+        .setTitle(`🦖 ${st.species} — Stock by color`)
+        .setDescription(lines.length ? lines.join("\n") : "No colors registered.")
         .setFooter({ text: `Pair: ${priceText(prices, st.payment, "pair")} • Dino: ${priceText(prices, st.payment, "dino")}` });
 
     const components = [];
@@ -1211,7 +1211,7 @@ async function colorScreen(st) {
         components.push(new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
                 .setCustomId("t_color")
-                .setPlaceholder("Escolhe a cor")
+                .setPlaceholder("Choose the color")
                 .addOptions(available.map(c => ({
                     label: c.color.slice(0, 100),
                     value: c.color.slice(0, 100),
@@ -1219,7 +1219,7 @@ async function colorScreen(st) {
                 })))
         ));
     } else {
-        embed.setDescription((lines.join("\n") || "Sem cores registadas.") + "\n\n⚠️ Sem stock disponível.");
+        embed.setDescription((lines.join("\n") || "No colors registered.") + "\n\n⚠️ No stock available.");
     }
     components.push(new ActionRowBuilder().addComponents(backButton(), cancelButton()));
 
@@ -1241,14 +1241,14 @@ async function genderScreen(st) {
         embeds: [new EmbedBuilder()
             .setTitle(`🦖 ${st.species} — ${st.color}`)
             .setDescription(
-                "Escolhe o sexo:\n" +
+                "Choose the gender:\n" +
                 `Pair (♂ + ♀): **${priceText(prices, st.payment, "pair")}**\n` +
-                `Dino individual: **${priceText(prices, st.payment, "dino")}**`
+                `Single dino: **${priceText(prices, st.payment, "dino")}**`
             )],
         components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId("t_gender_m").setLabel(`♂ Macho (${Math.max(m, 0)})`)
+            new ButtonBuilder().setCustomId("t_gender_m").setLabel(`♂ Male (${Math.max(m, 0)})`)
                 .setStyle(ButtonStyle.Primary).setDisabled(m <= 0),
-            new ButtonBuilder().setCustomId("t_gender_f").setLabel(`♀ Fêmea (${Math.max(f, 0)})`)
+            new ButtonBuilder().setCustomId("t_gender_f").setLabel(`♀ Female (${Math.max(f, 0)})`)
                 .setStyle(ButtonStyle.Primary).setDisabled(f <= 0),
             new ButtonBuilder().setCustomId("t_gender_pair")
                 .setLabel(`Pair (♂ + ♀)`)
@@ -1263,17 +1263,17 @@ async function summaryScreen(st) {
     const { lines, total, errors } = await calcCart(st);
 
     const embed = new EmbedBuilder()
-        .setTitle("🧾 O teu pedido")
+        .setTitle("🧾 Your order")
         .setDescription(`${lines.join("\n")}\n\n**Total: ${money(st.payment, total)}**`)
-        .setFooter({ text: `Pagamento: ${PAY_LABEL[st.payment]}` });
+        .setFooter({ text: `Payment: ${PAY_LABEL[st.payment]}` });
 
     const row = new ActionRowBuilder();
-    row.addComponents(new ButtonBuilder().setCustomId("t_buy_more").setLabel("Adicionar mais compras")
+    row.addComponents(new ButtonBuilder().setCustomId("t_buy_more").setLabel("Add more purchases")
         .setEmoji("➕").setStyle(ButtonStyle.Primary));
     row.addComponents(
-        new ButtonBuilder().setCustomId("t_finish").setLabel("Finalizar pedido")
+        new ButtonBuilder().setCustomId("t_finish").setLabel("Complete order")
             .setEmoji("✅").setStyle(ButtonStyle.Success).setDisabled(errors.length > 0),
-        new ButtonBuilder().setCustomId("t_clear").setLabel("Limpar").setEmoji("🗑️").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("t_clear").setLabel("Clear").setEmoji("🗑️").setStyle(ButtonStyle.Secondary),
         cancelButton()
     );
 
@@ -1285,7 +1285,7 @@ async function openTicket(i) {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
 
     const existing = i.guild.channels.cache.find(c => c.topic === `ticket:${i.user.id}`);
-    if (existing) return i.editReply(`🔴 Já tens um ticket aberto: ${existing}`);
+    if (existing) return i.editReply(`🔴 You already have an open ticket: ${existing}`);
 
     const allow = [
         PermissionFlagsBits.ViewChannel,
@@ -1310,10 +1310,10 @@ async function openTicket(i) {
     tickets.set(channel.id, st);
 
     const screen = paymentScreen();
-    screen.content = `${i.user}, bem-vindo ao teu ticket!`;
+    screen.content = `${i.user}, welcome to your ticket!`;
     await channel.send(screen);
 
-    return i.editReply(`🟢 Ticket criado: ${channel}`);
+    return i.editReply(`🟢 Ticket created: ${channel}`);
 }
 
 /* ---------- Descontar stock após validar todo o carrinho ---------- */
@@ -1353,7 +1353,7 @@ async function deductStockForCart(st) {
             }
         } else {
             const idx = colorRows.findIndex(r => (r?.[0] || "").trim() === item.color);
-            if (idx < 0) throw new Error(`A cor "${item.color}" já não existe em ${item.species}.`);
+            if (idx < 0) throw new Error(`The color "${item.color}" no longer exists in ${item.species}.`);
             if (item.type === "pair") {
                 addDelta(item.species, idx + 1, "m", item.qty);
                 addDelta(item.species, idx + 1, "f", item.qty);
@@ -1373,7 +1373,7 @@ async function deductStockForCart(st) {
         const newMale = male - delta.male;
         const newFemale = female - delta.female;
         if (newMale < 0 || newFemale < 0) {
-            throw new Error(`Stock insuficiente para ${delta.species} — ${color}. Disponível: ♂ ${male}, ♀ ${female}.`);
+            throw new Error(`Not enough stock for ${delta.species} — ${color}. Available: ♂ ${male}, ♀ ${female}.`);
         }
         updates.push({
             range: `${q(delta.species)}!A${delta.rowIndex + 1}:C${delta.rowIndex + 1}`,
@@ -1396,7 +1396,7 @@ async function createStaffOrder(i, st) {
 
     if (errors.length || st.cart.length === 0) {
         return i.followUp({
-            content: "🔴 Não foi possível finalizar (carrinho vazio ou itens sem preço). Fala com a staff.",
+            content: "🔴 Could not complete the order (empty cart or items without a price). Please contact staff.",
             flags: MessageFlags.Ephemeral
         });
     }
@@ -1412,8 +1412,8 @@ async function createStaffOrder(i, st) {
         c.type === ChannelType.GuildCategory && c.name === "⛔「STAFF」⛔");
 
     const staffChannel = await i.guild.channels.create({
-        name: `pedido-${safeName(i.user.username)}`,
-        topic: `pedido:${i.user.id}`,
+        name: `order-${safeName(i.user.username)}`,
+        topic: `order:${i.user.id}`,
         parent: staffCategory?.id || STAFF_CATEGORY_ID || undefined,
         permissionOverwrites: [
             { id: i.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -1425,7 +1425,7 @@ async function createStaffOrder(i, st) {
     if (staffCategory) {
         const siblings = staffCategory.children.cache.filter(c => c.id !== staffChannel.id);
         const lastPosition = siblings.size ? Math.max(...siblings.map(c => c.position)) : staffCategory.position;
-        await staffChannel.setPosition(lastPosition + 1).catch(err => console.warn("Não foi possível posicionar o canal de pedido no fim da categoria STAFF:", err.message));
+        await staffChannel.setPosition(lastPosition + 1).catch(err => console.warn("Could not move the order channel to the end of the STAFF category:", err.message));
     }
 
     try {
@@ -1436,14 +1436,14 @@ async function createStaffOrder(i, st) {
     }
 
     const embed = new EmbedBuilder()
-        .setTitle("🧾 Novo pedido")
+        .setTitle("🧾 New order")
         .setDescription(lines.join("\n"))
         .addFields(
-            { name: "Cliente", value: `${i.user} (${i.user.username})`, inline: true },
-            { name: "Tipo", value: st.mode === "bundle" ? "Bundle" : "Dino", inline: true },
-            { name: "Pagamento", value: PAY_LABEL[st.payment], inline: true },
+            { name: "Customer", value: `${i.user} (${i.user.username})`, inline: true },
+            { name: "Type", value: st.mode === "bundle" ? "Bundle" : "Dino", inline: true },
+            { name: "Payment", value: PAY_LABEL[st.payment], inline: true },
             { name: "Total", value: `**${money(st.payment, total)}**`, inline: true },
-            { name: "Ticket do cliente", value: `${i.channel}`, inline: true }
+            { name: "Customer ticket", value: `${i.channel}`, inline: true }
         )
         .setTimestamp();
 
@@ -1456,11 +1456,11 @@ async function createStaffOrder(i, st) {
     tickets.delete(i.channelId);
 
     await i.editReply({
-        content: "✅ Pedido enviado! A staff vai falar contigo aqui neste ticket.",
+        content: "✅ Order sent! Staff will talk to you here in this ticket.",
         embeds: [new EmbedBuilder()
-            .setTitle("🧾 O teu pedido")
+            .setTitle("🧾 Your order")
             .setDescription(`${lines.join("\n")}\n\n**Total: ${money(st.payment, total)}**`)
-            .setFooter({ text: `Pagamento: ${PAY_LABEL[st.payment]}` })],
+            .setFooter({ text: `Payment: ${PAY_LABEL[st.payment]}` })],
         components: [closeRow()]
     });
 }
@@ -1475,9 +1475,9 @@ async function handleTicketComponent(i) {
     // Fechar: só staff
     if (id === "t_close") {
         if (!isStaff(i)) {
-            return i.reply({ content: "Apenas staff pode fechar.", flags: MessageFlags.Ephemeral });
+            return i.reply({ content: "Only staff can close this.", flags: MessageFlags.Ephemeral });
         }
-        await i.reply("🔒 A fechar este canal em 5 segundos...");
+        await i.reply("🔒 Closing this channel in 5 seconds...");
         tickets.delete(i.channelId);
         setTimeout(() => i.channel.delete().catch(console.error), 5000);
         return;
@@ -1486,17 +1486,17 @@ async function handleTicketComponent(i) {
     const st = tickets.get(i.channelId);
     if (!st) {
         return i.reply({
-            content: "Este ticket já não está ativo (o bot pode ter reiniciado). Pede a um staff para o fechar e abre outro.",
+            content: "This ticket is no longer active (the bot may have restarted). Ask a staff member to close it and open a new one.",
             flags: MessageFlags.Ephemeral
         });
     }
 
     if (i.user.id !== st.userId) {
-        return i.reply({ content: "Só quem abriu o ticket pode usar isto.", flags: MessageFlags.Ephemeral });
+        return i.reply({ content: "Only the person who opened the ticket can use this.", flags: MessageFlags.Ephemeral });
     }
 
     if (id === "t_cancel") {
-        await i.reply("❌ Ticket cancelado. A fechar em 5 segundos...");
+        await i.reply("❌ Ticket cancelled. Closing in 5 seconds...");
         tickets.delete(i.channelId);
         setTimeout(() => i.channel.delete().catch(console.error), 5000);
         return;
@@ -1603,12 +1603,12 @@ async function handleTicketComponent(i) {
 
 async function publishTicketPanel(channel) {
     const embed = new EmbedBuilder()
-        .setTitle("🎫 Loja")
-        .setDescription("Clica no botão abaixo para abrir um ticket e fazer o teu pedido.");
+        .setTitle("🎫 Shop")
+        .setDescription("Click the button below to open a ticket and place your order.");
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId("t_open")
-            .setLabel("Abrir ticket")
+            .setLabel("Open ticket")
             .setEmoji("🎫")
             .setStyle(ButtonStyle.Success)
     );
@@ -1621,7 +1621,7 @@ async function ensureTicketPanel() {
     const channel = guild.channels.cache.find(c =>
         c.isTextBased() && c.name.includes("open-a-ticket"));
     if (!channel) {
-        console.warn('Canal "📝│「open-a-ticket」" não encontrado. Cria-o ou verifica o nome/permissões.');
+        console.warn('Channel "📝│「open-a-ticket」" not found. Create it or check the name/permissions.');
         return;
     }
     TICKET_CATEGORY_ID = channel.parentId || null;
@@ -1631,9 +1631,9 @@ async function ensureTicketPanel() {
         m.components.some(row => row.components.some(component => component.customId === "t_open")));
     if (!exists) {
         await publishTicketPanel(channel);
-        console.log(`Painel de tickets publicado automaticamente em #${channel.name}`);
+        console.log(`Ticket panel posted automatically in #${channel.name}`);
     } else {
-        console.log(`Painel de tickets já existe em #${channel.name}`);
+        console.log(`Ticket panel already exists in #${channel.name}`);
     }
 }
 
@@ -1641,12 +1641,12 @@ async function ensureTicketPanel() {
    BOT READY
 ------------------------------------------------------------*/
 client.once("clientReady", async () => {
-    console.log(`Bot ligado como ${client.user.tag}`);
+    console.log(`Bot logged in as ${client.user.tag}`);
     await initSheets();
     await registerCommands();
     await ensureTicketPanel();
     await refreshDashboard();
-    setInterval(() => refreshDashboard().catch(err => console.error("Erro no refresh da dashboard:", err)), 30 * 60 * 1000);
+    setInterval(() => refreshDashboard().catch(err => console.error("Dashboard refresh error:", err)), 30 * 60 * 1000);
 });
 
 // Evita que o bot crashe com erros inesperados
