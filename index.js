@@ -10,7 +10,8 @@ import {
     StringSelectMenuBuilder,
     PermissionFlagsBits,
     ButtonBuilder,
-    ButtonStyle
+    ButtonStyle,
+    ChannelType
 } from "discord.js";
 import { google } from "googleapis";
 
@@ -50,9 +51,39 @@ const auth = new google.auth.GoogleAuth({
 
 let sheetsClient;
 
+// Dashboard persistente: uma única mensagem editada, sem spam.
+const DASHBOARD_CHANNEL_NAME = "dashboard";
+const DASHBOARD_MARKER = "TUGAS_SHOP_STOCK_DASHBOARD";
+let dashboardMessageId = null;
+let dashboardSpecies = null;
+let dashboardColor = null;
+let dashboardGender = "m";
+let dashboardRefreshRunning = false;
+
 async function initSheets() {
     const authClient = await auth.getClient();
     sheetsClient = google.sheets({ version: "v4", auth: authClient });
+    await ensureSystemSheets();
+}
+
+async function ensureSystemSheets() {
+    const res = await sheetsClient.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    const titles = new Set((res.data.sheets || []).map(sh => sh.properties.title));
+    const requests = [];
+    for (const title of ["Precos", "Stock"]) {
+        if (!titles.has(title)) requests.push({ addSheet: { properties: { title } } });
+    }
+    if (requests.length) {
+        await sheetsClient.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, resource: { requests } });
+    }
+    await sheetsClient.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID, range: "Precos!A1:E1", valueInputOption: "USER_ENTERED",
+        resource: { values: [["Nome", "Tek por Pair/Bundle", "Tek por Extra/Dino", "PayPal por Pair/Bundle", "PayPal por Extra/Dino"]] }
+    });
+    await sheetsClient.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID, range: "Stock!A1:C1", valueInputOption: "USER_ENTERED",
+        resource: { values: [["Nome", "Bundles", "Estado"]] }
+    });
 }
 
 // Cliente Discord (para slash commands só precisa de Guilds)
@@ -111,128 +142,6 @@ function stockBall(bundles) {
     return "🟢";
 }
 
-
-// Dashboard de stock: mantém as mensagens do bot no canal ⛔│「dashboard」 atualizadas
-const DASHBOARD_CHANNEL_NAME = "dashboard";
-const DASHBOARD_MARKER = "TUGAS_SHOP_DASHBOARD";
-let dashboardRefreshInProgress = false;
-
-function parseStockNumber(value) {
-    const n = parseInt(String(value ?? "0"), 10);
-    return Number.isFinite(n) ? n : 0;
-}
-
-async function buildDashboardEmbeds() {
-    const species = await getSpeciesSheets();
-    const embeds = [];
-
-    const pricesRes = await sheetsClient.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: "Precos!A:E"
-    });
-    const priceRows = pricesRes.data.values || [];
-    const pricesBySpecies = new Map(priceRows.slice(1).map(row => [(row[0] || "").trim(), row]));
-
-    for (const name of species) {
-        const stockRes = await sheetsClient.spreadsheets.values.get({
-            spreadsheetId: SHEET_ID,
-            range: `${q(name)}!A2:C`
-        });
-        const rows = (stockRes.data.values || []).filter(row => (row[0] || "").trim() !== "");
-        const priceRow = pricesBySpecies.get(name) || [];
-        const fmtPrice = value => {
-            if (value === undefined || value === null || String(value).trim() === "") return "Não definido";
-            const n = Number(String(value).replace(",", "."));
-            return Number.isFinite(n) ? String(n) : String(value);
-        };
-        const bundles = rows.length
-            ? Math.min(...rows.map(row => Math.min(parseStockNumber(row[1]), parseStockNumber(row[2]))))
-            : 0;
-        const header = [
-            `**Pair / Bundle:** ${fmtPrice(priceRow[1])} Tek · ${fmtPrice(priceRow[3])} € PayPal`,
-            `**Dino individual:** ${fmtPrice(priceRow[2])} Tek · ${fmtPrice(priceRow[4])} € PayPal`,
-            `**Bundles disponíveis:** ${bundles} ${stockBall(bundles)}`
-        ].join("\n");
-
-        // Dividir espécies com muitas cores por várias embeds para não perder linhas.
-        const colorLines = rows.map(row => {
-            const color = String(row[0] || "Sem nome").trim();
-            return `• **${color}** — ♂ ${parseStockNumber(row[1])} | ♀ ${parseStockNumber(row[2])}`;
-        });
-        const pages = [];
-        let current = [];
-        let currentLength = 0;
-        for (const line of colorLines) {
-            if (currentLength + line.length + 1 > 3200 && current.length) {
-                pages.push(current);
-                current = [];
-                currentLength = 0;
-            }
-            current.push(line);
-            currentLength += line.length + 1;
-        }
-        if (current.length || pages.length === 0) pages.push(current);
-
-        pages.forEach((pageLines, index) => {
-            const pageSuffix = pages.length > 1 ? ` · Página ${index + 1}/${pages.length}` : "";
-            const description = `${header}\n\n**Stock por cor**\n${pageLines.length ? pageLines.join("\n") : "Sem cores registadas."}`;
-            embeds.push(new EmbedBuilder()
-                .setColor(bundles > 0 ? 0x2ecc71 : 0xe74c3c)
-                .setTitle(`🦖 ${name}${pageSuffix}`.slice(0, 256))
-                .setDescription(description.slice(0, 4096))
-                .setFooter({ text: `${DASHBOARD_MARKER} • Atualização automática a cada 30 minutos` })
-                .setTimestamp());
-        });
-    }
-
-    if (embeds.length === 0) {
-        embeds.push(new EmbedBuilder()
-            .setTitle("📦 Dashboard de Stock")
-            .setDescription("Ainda não existem espécies registadas no Google Sheets.")
-            .setFooter({ text: `${DASHBOARD_MARKER} • Atualização automática a cada 30 minutos` })
-            .setTimestamp());
-    }
-    return embeds;
-}
-
-async function refreshDashboard() {
-    if (dashboardRefreshInProgress || !client.isReady() || !sheetsClient || !SHEET_ID) return;
-    dashboardRefreshInProgress = true;
-    try {
-        const guild = await client.guilds.fetch(GUILD_ID);
-        await guild.channels.fetch();
-        const channel = guild.channels.cache.find(c =>
-            c.isTextBased() && c.name.toLowerCase().includes(DASHBOARD_CHANNEL_NAME));
-        if (!channel || !channel.messages) {
-            console.warn('Dashboard: canal "⛔│「dashboard」" não encontrado ou não é um canal de texto.');
-            return;
-        }
-
-        const embeds = await buildDashboardEmbeds();
-        const groups = [];
-        for (let i = 0; i < embeds.length; i += 10) groups.push(embeds.slice(i, i + 10));
-
-        const recent = await channel.messages.fetch({ limit: 100 });
-        const existing = [...recent.values()]
-            .filter(message => message.author.id === client.user.id &&
-                message.embeds.some(embed => (embed.footer?.text || "").includes(DASHBOARD_MARKER)))
-            .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-
-        for (let i = 0; i < groups.length; i++) {
-            if (existing[i]) await existing[i].edit({ content: "", embeds: groups[i] });
-            else await channel.send({ embeds: groups[i] });
-        }
-        for (let i = groups.length; i < existing.length; i++) {
-            await existing[i].delete().catch(() => {});
-        }
-        console.log(`Dashboard atualizado em #${channel.name}: ${embeds.length} painel(is)/espécie(s).`);
-    } catch (error) {
-        console.error("Erro ao atualizar dashboard de stock:", error);
-    } finally {
-        dashboardRefreshInProgress = false;
-    }
-}
-
 async function getStockData() {
     const species = await getSpeciesSheets();
     const data = [];
@@ -263,7 +172,6 @@ async function updateStockSheet() {
         resource: { values }
     });
 
-    // Atualiza o Discord logo após alterações de stock; continua também a atualizar de 30 em 30 min.
     if (client.isReady()) await refreshDashboard();
 }
 
@@ -309,6 +217,192 @@ async function getColorsForSpecies(sheetName) {
     return (res.data.values || []).map(r => r[0]).filter(Boolean);
 }
 
+
+/* -----------------------------------------------------------
+   DASHBOARD DE STOCK (uma mensagem, dropdowns + botões)
+------------------------------------------------------------*/
+function dashboardMarker(embed) {
+    return (embed?.footer?.text || "").includes(DASHBOARD_MARKER);
+}
+
+async function dashboardPayload() {
+    const species = await getSpeciesSheets();
+    if (!species.length) {
+        const embed = new EmbedBuilder()
+            .setTitle("📦 TUGAS SHOP — Stock")
+            .setDescription("Ainda não há dinos registados. Usa `/adddino` para criar a primeira espécie.")
+            .setFooter({ text: DASHBOARD_MARKER });
+        return { embeds: [embed], components: [] };
+    }
+
+    if (!dashboardSpecies || !species.includes(dashboardSpecies)) dashboardSpecies = species[0];
+    const colors = await getColorStock(dashboardSpecies);
+    if (!dashboardColor || !colors.some(c => c.color === dashboardColor)) dashboardColor = colors[0]?.color || null;
+    if (!colors.some(c => c.color === dashboardColor)) dashboardGender = "m";
+
+    const prices = await getPrices(dashboardSpecies);
+    const lines = colors.map(c => {
+        const selected = c.color === dashboardColor ? "➡️ " : "";
+        return `${selected}**${c.color}** — ♂ ${c.male} · ♀ ${c.female}`;
+    });
+    let description = lines.length ? lines.join("\n") : "Ainda não há cores. Usa `/addcolor` para adicionar uma cor com stock inicial a zero.";
+    if (description.length > 3800) description = description.slice(0, 3750) + "\n… (lista encurtada; usa o menu para selecionar uma cor)";
+
+    const selectedColor = colors.find(c => c.color === dashboardColor);
+    const selectedQty = selectedColor ? (dashboardGender === "m" ? selectedColor.male : selectedColor.female) : 0;
+    const embed = new EmbedBuilder()
+        .setTitle(`📦 TUGAS SHOP — ${dashboardSpecies}`)
+        .setDescription(description)
+        .addFields(
+            { name: "Pair / Bundle — Tek", value: prices?.tek?.bundle == null ? "Não definido" : `${prices.tek.bundle} Tek`, inline: true },
+            { name: "Extra — Tek", value: prices?.tek?.dino == null ? "Não definido" : `${prices.tek.dino} Tek`, inline: true },
+            { name: "Pair / Bundle — PayPal", value: prices?.paypal?.bundle == null ? "Não definido" : `${prices.paypal.bundle}€`, inline: true },
+            { name: "Extra — PayPal", value: prices?.paypal?.dino == null ? "Não definido" : `${prices.paypal.dino}€`, inline: true },
+            { name: "Ajustar stock", value: selectedColor ? `Cor: **${selectedColor.color}**\nGénero: **${dashboardGender === "m" ? "♂ Macho" : "♀ Fêmea"}**\nQuantidade atual: **${selectedQty}**` : "Seleciona uma cor para ajustar o stock." }
+        )
+        .setFooter({ text: `${DASHBOARD_MARKER} • Atualização automática a cada 30 minutos e após alterações de stock` });
+
+    const rows = [];
+    rows.push(new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId("dash_species")
+            .setPlaceholder("Seleciona um dino")
+            .addOptions(species.slice(0, 25).map(name => ({ label: name.slice(0, 100), value: name, default: name === dashboardSpecies })))
+    ));
+
+    if (colors.length) {
+        rows.push(new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId("dash_color")
+                .setPlaceholder("Seleciona uma cor")
+                .addOptions(colors.slice(0, 25).map(c => ({
+                    label: c.color.slice(0, 100),
+                    value: c.color,
+                    description: `♂ ${c.male} · ♀ ${c.female}`.slice(0, 100),
+                    default: c.color === dashboardColor
+                })))
+        ));
+    }
+
+    rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("dash_gender_m").setLabel("♂ Macho").setStyle(dashboardGender === "m" ? ButtonStyle.Success : ButtonStyle.Secondary).setDisabled(!selectedColor),
+        new ButtonBuilder().setCustomId("dash_gender_f").setLabel("♀ Fêmea").setStyle(dashboardGender === "f" ? ButtonStyle.Success : ButtonStyle.Secondary).setDisabled(!selectedColor)
+    ));
+    rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("dash_add_1").setLabel("+1").setStyle(ButtonStyle.Success).setDisabled(!selectedColor),
+        new ButtonBuilder().setCustomId("dash_add_5").setLabel("+5").setStyle(ButtonStyle.Success).setDisabled(!selectedColor),
+        new ButtonBuilder().setCustomId("dash_add_10").setLabel("+10").setStyle(ButtonStyle.Success).setDisabled(!selectedColor)
+    ));
+    rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("dash_sub_10").setLabel("-10").setStyle(ButtonStyle.Danger).setDisabled(!selectedColor || selectedQty < 10),
+        new ButtonBuilder().setCustomId("dash_sub_5").setLabel("-5").setStyle(ButtonStyle.Danger).setDisabled(!selectedColor || selectedQty < 5),
+        new ButtonBuilder().setCustomId("dash_sub_1").setLabel("-1").setStyle(ButtonStyle.Danger).setDisabled(!selectedColor || selectedQty < 1)
+    ));
+
+    return { embeds: [embed], components: rows };
+}
+
+async function refreshDashboard() {
+    if (!client.isReady() || !sheetsClient || dashboardRefreshRunning) return;
+    dashboardRefreshRunning = true;
+    try {
+        const guild = await client.guilds.fetch(GUILD_ID);
+        await guild.channels.fetch();
+        const channel = guild.channels.cache.find(c =>
+            c.type === ChannelType.GuildText && c.name.toLowerCase().includes(DASHBOARD_CHANNEL_NAME));
+        if (!channel) {
+            console.warn("Canal da dashboard não encontrado. Cria um canal com nome como ⛔│「dashboard」.");
+            return;
+        }
+
+        const messages = await channel.messages.fetch({ limit: 100 });
+        let message = dashboardMessageId ? messages.get(dashboardMessageId) : null;
+        if (!message) message = messages.find(m => m.author.id === client.user.id && m.embeds.some(dashboardMarker));
+        const payload = await dashboardPayload();
+        if (message) {
+            dashboardMessageId = message.id;
+            await message.edit(payload);
+        } else {
+            message = await channel.send(payload);
+            dashboardMessageId = message.id;
+        }
+    } catch (err) {
+        console.error("Erro ao atualizar a dashboard de stock:", err);
+    } finally {
+        dashboardRefreshRunning = false;
+    }
+}
+
+async function handleDashboardComponent(i) {
+    if (!i.customId?.startsWith("dash_")) return false;
+    if (!isStaff(i)) {
+        await i.reply({ content: "Apenas staff pode alterar ou navegar na dashboard de stock.", flags: MessageFlags.Ephemeral });
+        return true;
+    }
+
+    try {
+        if (i.isStringSelectMenu()) {
+            if (i.customId === "dash_species") {
+                dashboardSpecies = i.values[0];
+                const colors = await getColorStock(dashboardSpecies);
+                dashboardColor = colors[0]?.color || null;
+                dashboardGender = "m";
+            } else if (i.customId === "dash_color") {
+                dashboardColor = i.values[0];
+            }
+            await i.update(await dashboardPayload());
+            return true;
+        }
+
+        if (i.customId === "dash_gender_m" || i.customId === "dash_gender_f") {
+            dashboardGender = i.customId.endsWith("_m") ? "m" : "f";
+            await i.update(await dashboardPayload());
+            return true;
+        }
+
+        const match = i.customId.match(/^dash_(add|sub)_(1|5|10)$/);
+        if (!match) {
+            await i.reply({ content: "Ação da dashboard desconhecida.", flags: MessageFlags.Ephemeral });
+            return true;
+        }
+        if (!dashboardSpecies || !dashboardColor) {
+            await i.reply({ content: "Seleciona primeiro um dino e uma cor.", flags: MessageFlags.Ephemeral });
+            return true;
+        }
+
+        await i.deferUpdate();
+        const delta = Number(match[2]) * (match[1] === "add" ? 1 : -1);
+        const res = await sheetsClient.spreadsheets.values.get({
+            spreadsheetId: SHEET_ID,
+            range: `${q(dashboardSpecies)}!A:C`
+        });
+        const rows = res.data.values || [];
+        const rowIndex = rows.findIndex((r, idx) => idx > 0 && (r[0] || "").trim() === dashboardColor);
+        if (rowIndex < 1) throw new Error(`Não encontrei a cor ${dashboardColor} em ${dashboardSpecies}.`);
+
+        const row = rows[rowIndex];
+        const male = parseInt(row[1] || "0", 10) || 0;
+        const female = parseInt(row[2] || "0", 10) || 0;
+        const current = dashboardGender === "m" ? male : female;
+        const next = current + delta;
+        if (next < 0) throw new Error(`Stock insuficiente: só existem ${current} unidades para retirar.`);
+
+        await sheetsClient.spreadsheets.values.update({
+            spreadsheetId: SHEET_ID,
+            range: `${q(dashboardSpecies)}!A${rowIndex + 1}:C${rowIndex + 1}`,
+            valueInputOption: "USER_ENTERED",
+            resource: { values: [[dashboardColor, dashboardGender === "m" ? next : male, dashboardGender === "f" ? next : female]] }
+        });
+        await updateStockSheet();
+        await refreshDashboard();
+    } catch (err) {
+        console.error("Erro no controlo de stock da dashboard:", err);
+        if (i.deferred || i.replied) await i.followUp({ content: `🔴 ${err.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+        else await i.reply({ content: `🔴 ${err.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+    return true;
+}
+
 /* -----------------------------------------------------------
    SLASH COMMANDS
 ------------------------------------------------------------*/
@@ -318,10 +412,10 @@ async function registerCommands() {
             .setName("adddino")
             .setDescription("Adicionar nova espécie")
             .addStringOption(o => o.setName("nome").setDescription("Nome da espécie").setRequired(true))
-            .addIntegerOption(o => o.setName("pair").setDescription("Preço Pair / Bundle (Tek)").setRequired(true))
-            .addIntegerOption(o => o.setName("extra").setDescription("Extra Female / Dino (Tek)").setRequired(true))
-            .addNumberOption(o => o.setName("pair_paypal").setDescription("Preço Pair / Bundle (PayPal)").setRequired(true).setMinValue(0))
-            .addNumberOption(o => o.setName("extra_paypal").setDescription("Extra Female / Dino (PayPal)").setRequired(true).setMinValue(0)),
+            .addNumberOption(o => o.setName("pair").setDescription("Preço do bundle/pair em Tek").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("extra").setDescription("Preço por dino extra em Tek").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("pair_paypal").setDescription("Preço do bundle/pair em PayPal (€)").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("extra_paypal").setDescription("Preço por dino extra em PayPal (€)").setRequired(true).setMinValue(0)),
 
         new SlashCommandBuilder()
             .setName("addcolor")
@@ -331,9 +425,7 @@ async function registerCommands() {
                     .setDescription("Espécie")
                     .setRequired(true)
                     .setAutocomplete(true))
-            .addStringOption(o => o.setName("color").setDescription("Nome da cor").setRequired(true))
-            .addIntegerOption(o => o.setName("male").setDescription("Quantidade de machos").setRequired(true).setMinValue(0))
-            .addIntegerOption(o => o.setName("female").setDescription("Quantidade de fêmeas").setRequired(true).setMinValue(0)),
+            .addStringOption(o => o.setName("color").setDescription("Nome da cor").setRequired(true)),
 
         new SlashCommandBuilder()
             .setName("stock")
@@ -375,14 +467,14 @@ async function registerCommands() {
                     .setRequired(true)
                     .setAutocomplete(true))
             .addStringOption(o => o.setName("novo_nome").setDescription("Novo nome da espécie"))
-            .addIntegerOption(o => o.setName("pair").setDescription("Novo preço Pair").setMinValue(0))
-            .addIntegerOption(o => o.setName("extra").setDescription("Novo Extra Female / Dino (Tek)").setMinValue(0))
+            .addNumberOption(o => o.setName("pair").setDescription("Novo preço Pair / Bundle em Tek").setMinValue(0))
+            .addNumberOption(o => o.setName("extra").setDescription("Novo preço por dino extra em Tek").setMinValue(0))
             .addNumberOption(o => o.setName("pair_paypal").setDescription("Novo preço Pair / Bundle (PayPal)").setMinValue(0))
             .addNumberOption(o => o.setName("extra_paypal").setDescription("Novo Extra Female / Dino (PayPal)").setMinValue(0)),
 
         new SlashCommandBuilder()
             .setName("editcolor")
-            .setDescription("Editar uma cor de uma espécie (nome e/ou quantidades)")
+            .setDescription("Renomear uma cor de uma espécie; stock ajustado pela dashboard")
             .addStringOption(o =>
                 o.setName("especie")
                     .setDescription("Espécie")
@@ -394,8 +486,6 @@ async function registerCommands() {
                     .setRequired(true)
                     .setAutocomplete(true))
             .addStringOption(o => o.setName("novo_nome").setDescription("Novo nome da cor"))
-            .addIntegerOption(o => o.setName("male").setDescription("Nova quantidade de machos").setMinValue(0))
-            .addIntegerOption(o => o.setName("female").setDescription("Nova quantidade de fêmeas").setMinValue(0))
     ].map(cmd => cmd.toJSON());
 
     const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -439,8 +529,9 @@ client.on("interactionCreate", async (interaction) => {
             return interaction.respond(choices);
         }
 
-        // Botões e menus do sistema de tickets
+        // Componentes da dashboard e do sistema de tickets
         if (interaction.isButton() || interaction.isStringSelectMenu()) {
+            if (interaction.customId?.startsWith("dash_")) return handleDashboardComponent(interaction);
             return handleTicketComponent(interaction);
         }
 
@@ -479,8 +570,8 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.deferReply();
 
             const nome = interaction.options.getString("nome").trim();
-            const pair = interaction.options.getInteger("pair");
-            const extra = interaction.options.getInteger("extra");
+            const pair = interaction.options.getNumber("pair");
+            const extra = interaction.options.getNumber("extra");
             const pairPP = interaction.options.getNumber("pair_paypal");
             const extraPP = interaction.options.getNumber("extra_paypal");
 
@@ -527,26 +618,32 @@ client.on("interactionCreate", async (interaction) => {
 
             const especie = interaction.options.getString("especie");
             const color = interaction.options.getString("color").trim();
-            const male = interaction.options.getInteger("male");
-            const female = interaction.options.getInteger("female");
 
             const species = await getSpeciesSheets();
             if (!species.includes(especie)) {
                 return interaction.editReply(`🔴 A espécie **${especie}** não existe. Escolhe uma da lista.`);
             }
+            if (!color || color.length > 100) return interaction.editReply("🔴 Nome de cor inválido (máximo 100 caracteres).");
 
+            const existingColors = await getColorsForSpecies(especie);
+            if (existingColors.some(c => c.toLowerCase() === color.toLowerCase())) {
+                return interaction.editReply(`🔴 A cor **${color}** já existe em **${especie}**.`);
+            }
+
+            // A cor é criada a zero; a staff ajusta o stock pelos botões da dashboard.
             await sheetsClient.spreadsheets.values.append({
                 spreadsheetId: SHEET_ID,
                 range: `${q(especie)}!A:C`,
                 valueInputOption: "USER_ENTERED",
-                resource: { values: [[color, male, female]] }
+                resource: { values: [[color, 0, 0]] }
             });
 
+            dashboardSpecies = especie;
+            dashboardColor = color;
             await updateStockSheet();
+            await refreshDashboard();
 
-            return interaction.editReply(
-                `🟢 Cor **${color}** (♂ ${male} / ♀ ${female}) adicionada a **${especie}**!`
-            );
+            return interaction.editReply(`🟢 Cor **${color}** adicionada a **${especie}** com stock a zero. Usa a dashboard para adicionar quantidade com os botões.`);
         }
 
         /* ---------- /deldino ---------- */
@@ -661,8 +758,8 @@ client.on("interactionCreate", async (interaction) => {
             const especie = interaction.options.getString("especie");
             const novoNomeRaw = interaction.options.getString("novo_nome");
             const novoNome = novoNomeRaw ? novoNomeRaw.trim() : null;
-            const pair = interaction.options.getInteger("pair");
-            const extra = interaction.options.getInteger("extra");
+            const pair = interaction.options.getNumber("pair");
+            const extra = interaction.options.getNumber("extra");
 
             const pairPP = interaction.options.getNumber("pair_paypal");
             const extraPP = interaction.options.getNumber("extra_paypal");
@@ -743,6 +840,7 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             // 3) Atualizar Stock (o nome pode ter mudado)
+            if (renaming && dashboardSpecies === especie) dashboardSpecies = novoNome;
             await updateStockSheet();
 
             return interaction.editReply(
@@ -763,11 +861,8 @@ client.on("interactionCreate", async (interaction) => {
             const color = interaction.options.getString("color").trim();
             const novoNomeRaw = interaction.options.getString("novo_nome");
             const novoNome = novoNomeRaw ? novoNomeRaw.trim() : null;
-            const male = interaction.options.getInteger("male");
-            const female = interaction.options.getInteger("female");
-
-            if (!novoNome && male === null && female === null) {
-                return interaction.editReply("🔴 Indica pelo menos uma coisa para alterar: `novo_nome`, `male` ou `female`.");
+            if (!novoNome) {
+                return interaction.editReply("🔴 Indica o `novo_nome` da cor. Para alterar quantidades, usa os botões da dashboard.");
             }
 
             const species = await getSpeciesSheets();
@@ -805,23 +900,19 @@ client.on("interactionCreate", async (interaction) => {
                 }
             }
 
-            const finalName = novoNome || currentName;
-            const finalMale = male !== null ? male : (currentRow[1] ?? 0);
-            const finalFemale = female !== null ? female : (currentRow[2] ?? 0);
+            const finalName = novoNome;
 
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId: SHEET_ID,
                 range: `${q(especie)}!A${rowIndex + 1}:C${rowIndex + 1}`,
                 valueInputOption: "USER_ENTERED",
-                resource: { values: [[finalName, finalMale, finalFemale]] }
+                resource: { values: [[finalName, currentRow[1] ?? 0, currentRow[2] ?? 0]] }
             });
 
+            if (dashboardSpecies === especie && dashboardColor === currentName) dashboardColor = finalName;
             await updateStockSheet();
 
-            return interaction.editReply(
-                `🟢 Cor **${currentName}** de **${especie}** atualizada!\n` +
-                `Agora: **${finalName}** (♂ ${finalMale} / ♀ ${finalFemale})`
-            );
+            return interaction.editReply(`🟢 Cor **${currentName}** de **${especie}** renomeada para **${finalName}**. As quantidades são alteradas na dashboard.`);
         }
 
         /* ---------- /ticketpanel ---------- */
@@ -1268,16 +1359,26 @@ async function createStaffOrder(i, st) {
         PermissionFlagsBits.ReadMessageHistory
     ];
 
+    await i.guild.channels.fetch();
+    const staffCategory = i.guild.channels.cache.find(c =>
+        c.type === ChannelType.GuildCategory && c.name === "⛔「STAFF」⛔");
+
     const staffChannel = await i.guild.channels.create({
         name: `pedido-${safeName(i.user.username)}`,
         topic: `pedido:${i.user.id}`,
-        parent: STAFF_CATEGORY_ID || undefined,
+        parent: staffCategory?.id || STAFF_CATEGORY_ID || undefined,
         permissionOverwrites: [
             { id: i.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
             { id: STAFF_ROLE_ID, allow },
             { id: client.user.id, allow: [...allow, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.EmbedLinks] }
         ]
     });
+
+    if (staffCategory) {
+        const siblings = staffCategory.children.cache.filter(c => c.id !== staffChannel.id);
+        const lastPosition = siblings.size ? Math.max(...siblings.map(c => c.position)) : staffCategory.position;
+        await staffChannel.setPosition(lastPosition + 1).catch(err => console.warn("Não foi possível posicionar o canal de pedido no fim da categoria STAFF:", err.message));
+    }
 
     try {
         await deductStockForCart(st);
@@ -1497,9 +1598,7 @@ client.once("clientReady", async () => {
     await registerCommands();
     await ensureTicketPanel();
     await refreshDashboard();
-    setInterval(() => {
-        refreshDashboard().catch(error => console.error("Erro no refresh periódico do dashboard:", error));
-    }, 30 * 60 * 1000);
+    setInterval(() => refreshDashboard().catch(err => console.error("Erro no refresh da dashboard:", err)), 30 * 60 * 1000);
 });
 
 // Evita que o bot crashe com erros inesperados
