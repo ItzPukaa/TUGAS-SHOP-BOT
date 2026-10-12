@@ -112,7 +112,7 @@ function stockBall(bundles) {
 }
 
 
-// Dashboard de stock: mantém as mensagens do bot no canal ⛔│「dashboard」 atualizadas.
+// Dashboard de stock: mantém as mensagens do bot no canal ⛔│「dashboard」 atualizadas
 const DASHBOARD_CHANNEL_NAME = "dashboard";
 const DASHBOARD_MARKER = "TUGAS_SHOP_DASHBOARD";
 let dashboardRefreshInProgress = false;
