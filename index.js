@@ -66,6 +66,30 @@ async function initSheets() {
     await ensureSystemSheets();
 }
 
+// Layout antigo: Nome | Tek Pair/Bundle | Tek Extra | PayPal Pair/Bundle | PayPal Extra
+// Layout novo:   Nome | Tek Pair | Tek Bundle | Tek Extra | PayPal Pair | PayPal Bundle | PayPal Extra
+// Migra automaticamente (o preço antigo "Pair/Bundle" é copiado para Pair e Bundle; depois ajusta com /editdino).
+async function migratePrecosLayout() {
+    const res = await sheetsClient.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "Precos!A:G" });
+    const rows = res.data.values || [];
+    const header = rows[0] || [];
+    const isOld = header.length > 0 && header.length <= 5 && String(header[1] || "").includes("Pair/Bundle");
+    if (!isOld) return;
+
+    const migrated = rows.slice(1)
+        .filter(r => (r[0] || "").trim() !== "")
+        .map(r => [r[0], r[1] ?? "", r[1] ?? "", r[2] ?? "", r[3] ?? "", r[3] ?? "", r[4] ?? ""]);
+
+    await sheetsClient.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: "Precos!A2:G" });
+    if (migrated.length) {
+        await sheetsClient.spreadsheets.values.update({
+            spreadsheetId: SHEET_ID, range: `Precos!A2:G${migrated.length + 1}`, valueInputOption: "USER_ENTERED",
+            resource: { values: migrated }
+        });
+    }
+    console.log(`Folha Precos migrada para o novo layout (${migrated.length} espécies).`);
+}
+
 async function ensureSystemSheets() {
     const res = await sheetsClient.spreadsheets.get({ spreadsheetId: SHEET_ID });
     const titles = new Set((res.data.sheets || []).map(sh => sh.properties.title));
@@ -76,9 +100,10 @@ async function ensureSystemSheets() {
     if (requests.length) {
         await sheetsClient.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, resource: { requests } });
     }
+    await migratePrecosLayout();
     await sheetsClient.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID, range: "Precos!A1:E1", valueInputOption: "USER_ENTERED",
-        resource: { values: [["Nome", "Tek por Pair/Bundle", "Tek por Extra/Dino", "PayPal por Pair/Bundle", "PayPal por Extra/Dino"]] }
+        spreadsheetId: SHEET_ID, range: "Precos!A1:G1", valueInputOption: "USER_ENTERED",
+        resource: { values: [["Nome", "Tek Pair", "Tek Bundle", "Tek Extra", "PayPal Pair", "PayPal Bundle", "PayPal Extra"]] }
     });
     await sheetsClient.spreadsheets.values.update({
         spreadsheetId: SHEET_ID, range: "Stock!A1:C1", valueInputOption: "USER_ENTERED",
@@ -254,9 +279,11 @@ async function dashboardPayload() {
         .setTitle(`📦 TUGAS SHOP — ${dashboardSpecies}`)
         .setDescription(description)
         .addFields(
-            { name: "Pair / Bundle — Tek", value: prices?.tek?.bundle == null ? "Não definido" : `${prices.tek.bundle} Tek`, inline: true },
+            { name: "Pair — Tek", value: prices?.tek?.pair == null ? "Não definido" : `${prices.tek.pair} Tek`, inline: true },
+            { name: "Bundle — Tek", value: prices?.tek?.bundle == null ? "Não definido" : `${prices.tek.bundle} Tek`, inline: true },
             { name: "Extra — Tek", value: prices?.tek?.dino == null ? "Não definido" : `${prices.tek.dino} Tek`, inline: true },
-            { name: "Pair / Bundle — PayPal", value: prices?.paypal?.bundle == null ? "Não definido" : `${prices.paypal.bundle}€`, inline: true },
+            { name: "Pair — PayPal", value: prices?.paypal?.pair == null ? "Não definido" : `${prices.paypal.pair}€`, inline: true },
+            { name: "Bundle — PayPal", value: prices?.paypal?.bundle == null ? "Não definido" : `${prices.paypal.bundle}€`, inline: true },
             { name: "Extra — PayPal", value: prices?.paypal?.dino == null ? "Não definido" : `${prices.paypal.dino}€`, inline: true },
             { name: "Ajustar stock", value: selectedColor ? `Cor: **${selectedColor.color}**\nGénero: **${dashboardGender === "m" ? "♂ Macho" : "♀ Fêmea"}**\nQuantidade atual: **${selectedQty}**` : "Seleciona uma cor para ajustar o stock." }
         )
@@ -412,9 +439,11 @@ async function registerCommands() {
             .setName("adddino")
             .setDescription("Adicionar nova espécie")
             .addStringOption(o => o.setName("nome").setDescription("Nome da espécie").setRequired(true))
-            .addNumberOption(o => o.setName("pair").setDescription("Preço do bundle/pair em Tek").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("pair").setDescription("Preço do Pair (1♂ + 1♀ de uma cor) em Tek").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("bundle").setDescription("Preço do Bundle (1♂ + 1♀ de CADA cor) em Tek").setRequired(true).setMinValue(0))
             .addNumberOption(o => o.setName("extra").setDescription("Preço por dino extra em Tek").setRequired(true).setMinValue(0))
-            .addNumberOption(o => o.setName("pair_paypal").setDescription("Preço do bundle/pair em PayPal (€)").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("pair_paypal").setDescription("Preço do Pair em PayPal (€)").setRequired(true).setMinValue(0))
+            .addNumberOption(o => o.setName("bundle_paypal").setDescription("Preço do Bundle em PayPal (€)").setRequired(true).setMinValue(0))
             .addNumberOption(o => o.setName("extra_paypal").setDescription("Preço por dino extra em PayPal (€)").setRequired(true).setMinValue(0)),
 
         new SlashCommandBuilder()
@@ -467,10 +496,12 @@ async function registerCommands() {
                     .setRequired(true)
                     .setAutocomplete(true))
             .addStringOption(o => o.setName("novo_nome").setDescription("Novo nome da espécie"))
-            .addNumberOption(o => o.setName("pair").setDescription("Novo preço Pair / Bundle em Tek").setMinValue(0))
+            .addNumberOption(o => o.setName("pair").setDescription("Novo preço do Pair em Tek").setMinValue(0))
+            .addNumberOption(o => o.setName("bundle").setDescription("Novo preço do Bundle em Tek").setMinValue(0))
             .addNumberOption(o => o.setName("extra").setDescription("Novo preço por dino extra em Tek").setMinValue(0))
-            .addNumberOption(o => o.setName("pair_paypal").setDescription("Novo preço Pair / Bundle (PayPal)").setMinValue(0))
-            .addNumberOption(o => o.setName("extra_paypal").setDescription("Novo Extra Female / Dino (PayPal)").setMinValue(0)),
+            .addNumberOption(o => o.setName("pair_paypal").setDescription("Novo preço do Pair em PayPal (€)").setMinValue(0))
+            .addNumberOption(o => o.setName("bundle_paypal").setDescription("Novo preço do Bundle em PayPal (€)").setMinValue(0))
+            .addNumberOption(o => o.setName("extra_paypal").setDescription("Novo preço por dino extra em PayPal (€)").setMinValue(0)),
 
         new SlashCommandBuilder()
             .setName("editcolor")
@@ -571,8 +602,10 @@ client.on("interactionCreate", async (interaction) => {
 
             const nome = interaction.options.getString("nome").trim();
             const pair = interaction.options.getNumber("pair");
+            const bundle = interaction.options.getNumber("bundle");
             const extra = interaction.options.getNumber("extra");
             const pairPP = interaction.options.getNumber("pair_paypal");
+            const bundlePP = interaction.options.getNumber("bundle_paypal");
             const extraPP = interaction.options.getNumber("extra_paypal");
 
             if (!nome || nome.length > 100 || /[\[\]\*\?:\/\\]/.test(nome)) {
@@ -602,14 +635,18 @@ client.on("interactionCreate", async (interaction) => {
             // Preços
             await sheetsClient.spreadsheets.values.append({
                 spreadsheetId: SHEET_ID,
-                range: "Precos!A:E",
+                range: "Precos!A:G",
                 valueInputOption: "USER_ENTERED",
-                resource: { values: [[nome, pair, extra, pairPP, extraPP]] }
+                resource: { values: [[nome, pair, bundle, extra, pairPP, bundlePP, extraPP]] }
             });
 
             await updateStockSheet();
 
-            return interaction.editReply(`🟢 Espécie **${nome}** criada com sucesso!`);
+            return interaction.editReply(
+                `🟢 Espécie **${nome}** criada com sucesso!\n` +
+                `Tek — Pair: **${pair}** · Bundle: **${bundle}** · Extra: **${extra}**\n` +
+                `PayPal — Pair: **${pairPP}€** · Bundle: **${bundlePP}€** · Extra: **${extraPP}€**`
+            );
         }
 
         /* ---------- /addcolor ---------- */
@@ -759,13 +796,15 @@ client.on("interactionCreate", async (interaction) => {
             const novoNomeRaw = interaction.options.getString("novo_nome");
             const novoNome = novoNomeRaw ? novoNomeRaw.trim() : null;
             const pair = interaction.options.getNumber("pair");
+            const bundle = interaction.options.getNumber("bundle");
             const extra = interaction.options.getNumber("extra");
 
             const pairPP = interaction.options.getNumber("pair_paypal");
+            const bundlePP = interaction.options.getNumber("bundle_paypal");
             const extraPP = interaction.options.getNumber("extra_paypal");
 
-            if (!novoNome && pair === null && extra === null && pairPP === null && extraPP === null) {
-                return interaction.editReply("🔴 Indica pelo menos uma coisa para alterar: `novo_nome`, `pair`, `extra`, `pair_paypal` ou `extra_paypal`.");
+            if (!novoNome && pair === null && bundle === null && extra === null && pairPP === null && bundlePP === null && extraPP === null) {
+                return interaction.editReply("🔴 Indica pelo menos uma coisa para alterar: `novo_nome`, `pair`, `bundle`, `extra`, `pair_paypal`, `bundle_paypal` ou `extra_paypal`.");
             }
 
             const species = await getSpeciesSheets();
@@ -789,11 +828,11 @@ client.on("interactionCreate", async (interaction) => {
             // Linha na folha Precos
             const precos = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId: SHEET_ID,
-                range: "Precos!A:E"
+                range: "Precos!A:G"
             });
             const precoRows = precos.data.values || [];
             const precoIndex = precoRows.findIndex(r => (r[0] || "").trim() === especie);
-            const current = precoIndex !== -1 ? precoRows[precoIndex] : [especie, 0, 0, "", ""];
+            const current = precoIndex !== -1 ? precoRows[precoIndex] : [especie, "", "", "", "", "", ""];
 
             // 1) Renomear a folha
             if (renaming) {
@@ -817,23 +856,25 @@ client.on("interactionCreate", async (interaction) => {
             const finalName = renaming ? novoNome : especie;
             const newRow = [
                 finalName,
-                pair !== null ? pair : (current[1] ?? 0),
-                extra !== null ? extra : (current[2] ?? 0),
-                pairPP !== null ? pairPP : (current[3] ?? ""),
-                extraPP !== null ? extraPP : (current[4] ?? "")
+                pair !== null ? pair : (current[1] ?? ""),
+                bundle !== null ? bundle : (current[2] ?? ""),
+                extra !== null ? extra : (current[3] ?? ""),
+                pairPP !== null ? pairPP : (current[4] ?? ""),
+                bundlePP !== null ? bundlePP : (current[5] ?? ""),
+                extraPP !== null ? extraPP : (current[6] ?? "")
             ];
 
             if (precoIndex !== -1) {
                 await sheetsClient.spreadsheets.values.update({
                     spreadsheetId: SHEET_ID,
-                    range: `Precos!A${precoIndex + 1}:E${precoIndex + 1}`,
+                    range: `Precos!A${precoIndex + 1}:G${precoIndex + 1}`,
                     valueInputOption: "USER_ENTERED",
                     resource: { values: [newRow] }
                 });
             } else {
                 await sheetsClient.spreadsheets.values.append({
                     spreadsheetId: SHEET_ID,
-                    range: "Precos!A:E",
+                    range: "Precos!A:G",
                     valueInputOption: "USER_ENTERED",
                     resource: { values: [newRow] }
                 });
@@ -846,10 +887,12 @@ client.on("interactionCreate", async (interaction) => {
             return interaction.editReply(
                 `🟢 Espécie **${finalName}** atualizada!` +
                 (renaming ? `\nNome: ${especie} → **${finalName}**` : "") +
-                (pair !== null ? `\nPair: **${pair}**` : "") +
-                (extra !== null ? `\nExtra Female: **${extra}**` : "") +
-                (pairPP !== null ? `\nPair PayPal: **${pairPP}**` : "") +
-                (extraPP !== null ? `\nExtra PayPal: **${extraPP}**` : "")
+                (pair !== null ? `\nPair Tek: **${pair}**` : "") +
+                (bundle !== null ? `\nBundle Tek: **${bundle}**` : "") +
+                (extra !== null ? `\nExtra Tek: **${extra}**` : "") +
+                (pairPP !== null ? `\nPair PayPal: **${pairPP}€**` : "") +
+                (bundlePP !== null ? `\nBundle PayPal: **${bundlePP}€**` : "") +
+                (extraPP !== null ? `\nExtra PayPal: **${extraPP}€**` : "")
             );
         }
 
@@ -969,11 +1012,11 @@ function safeName(s) {
     return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "cliente";
 }
 
-// Precos: A=Nome | B=Pair/Bundle Tek | C=Extra/Dino Tek | D=Pair/Bundle PayPal | E=Extra/Dino PayPal
+// Precos: A=Nome | B=Tek Pair | C=Tek Bundle | D=Tek Extra | E=PayPal Pair | F=PayPal Bundle | G=PayPal Extra
 async function getPrices(species) {
     const res = await sheetsClient.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
-        range: "Precos!A:E"
+        range: "Precos!A:G"
     });
     const row = (res.data.values || []).find(r => (r[0] || "").trim() === species);
     if (!row) return null;
@@ -984,8 +1027,8 @@ async function getPrices(species) {
     };
 
     return {
-        tek: { bundle: n(row[1]), dino: n(row[2]) },
-        paypal: { bundle: n(row[3]), dino: n(row[4]) }
+        tek: { pair: n(row[1]), bundle: n(row[2]), dino: n(row[3]) },
+        paypal: { pair: n(row[4]), bundle: n(row[5]), dino: n(row[6]) }
     };
 }
 
@@ -1024,7 +1067,7 @@ async function calcCart(st) {
     for (const it of st.cart) {
         if (!cache.has(it.species)) cache.set(it.species, await getPrices(it.species));
         const p = cache.get(it.species);
-        const priceKind = it.type === "pair" ? "bundle" : it.type;
+        const priceKind = it.type; // "bundle" | "pair" | "dino" — cada um com o seu preço
         const unit = p ? p[st.payment][priceKind] : null;
 
         const label = it.type === "bundle"
@@ -1161,7 +1204,7 @@ async function colorScreen(st) {
     const embed = new EmbedBuilder()
         .setTitle(`🦖 ${st.species} — Stock por cor`)
         .setDescription(lines.length ? lines.join("\n") : "Sem cores registadas.")
-        .setFooter({ text: `Preço por dino: ${priceText(prices, st.payment, "dino")}` });
+        .setFooter({ text: `Pair: ${priceText(prices, st.payment, "pair")} • Dino: ${priceText(prices, st.payment, "dino")}` });
 
     const components = [];
     if (available.length) {
@@ -1185,6 +1228,7 @@ async function colorScreen(st) {
 
 async function genderScreen(st) {
     const stock = await getColorStock(st.species);
+    const prices = await getPrices(st.species);
     const c = stock.find(x => x.color === st.color);
     const pairsInCart = st.cart
         .filter(x => x.type === "pair" && x.species === st.species && x.color === st.color)
@@ -1196,7 +1240,11 @@ async function genderScreen(st) {
         content: "",
         embeds: [new EmbedBuilder()
             .setTitle(`🦖 ${st.species} — ${st.color}`)
-            .setDescription("Escolhe o sexo:")],
+            .setDescription(
+                "Escolhe o sexo:\n" +
+                `Pair (♂ + ♀): **${priceText(prices, st.payment, "pair")}**\n` +
+                `Dino individual: **${priceText(prices, st.payment, "dino")}**`
+            )],
         components: [new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId("t_gender_m").setLabel(`♂ Macho (${Math.max(m, 0)})`)
                 .setStyle(ButtonStyle.Primary).setDisabled(m <= 0),
