@@ -17,7 +17,7 @@ import { google } from "googleapis";
 // Em local, o Node pode carregar .env; no Render, configura as variáveis no painel.
 try { process.loadEnvFile(); } catch {}
 
-// CONFIG
+// CONFIGURATION
 const TOKEN = process.env.DISCORD_TOKEN;
 const SHEET_ID = process.env.SHEET_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
@@ -111,6 +111,128 @@ function stockBall(bundles) {
     return "🟢";
 }
 
+
+// Dashboard de stock: mantém as mensagens do bot no canal ⛔│「dashboard」 atualizadas.
+const DASHBOARD_CHANNEL_NAME = "dashboard";
+const DASHBOARD_MARKER = "TUGAS_SHOP_DASHBOARD";
+let dashboardRefreshInProgress = false;
+
+function parseStockNumber(value) {
+    const n = parseInt(String(value ?? "0"), 10);
+    return Number.isFinite(n) ? n : 0;
+}
+
+async function buildDashboardEmbeds() {
+    const species = await getSpeciesSheets();
+    const embeds = [];
+
+    const pricesRes = await sheetsClient.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: "Precos!A:E"
+    });
+    const priceRows = pricesRes.data.values || [];
+    const pricesBySpecies = new Map(priceRows.slice(1).map(row => [(row[0] || "").trim(), row]));
+
+    for (const name of species) {
+        const stockRes = await sheetsClient.spreadsheets.values.get({
+            spreadsheetId: SHEET_ID,
+            range: `${q(name)}!A2:C`
+        });
+        const rows = (stockRes.data.values || []).filter(row => (row[0] || "").trim() !== "");
+        const priceRow = pricesBySpecies.get(name) || [];
+        const fmtPrice = value => {
+            if (value === undefined || value === null || String(value).trim() === "") return "Não definido";
+            const n = Number(String(value).replace(",", "."));
+            return Number.isFinite(n) ? String(n) : String(value);
+        };
+        const bundles = rows.length
+            ? Math.min(...rows.map(row => Math.min(parseStockNumber(row[1]), parseStockNumber(row[2]))))
+            : 0;
+        const header = [
+            `**Pair / Bundle:** ${fmtPrice(priceRow[1])} Tek · ${fmtPrice(priceRow[3])} € PayPal`,
+            `**Dino individual:** ${fmtPrice(priceRow[2])} Tek · ${fmtPrice(priceRow[4])} € PayPal`,
+            `**Bundles disponíveis:** ${bundles} ${stockBall(bundles)}`
+        ].join("\n");
+
+        // Dividir espécies com muitas cores por várias embeds para não perder linhas.
+        const colorLines = rows.map(row => {
+            const color = String(row[0] || "Sem nome").trim();
+            return `• **${color}** — ♂ ${parseStockNumber(row[1])} | ♀ ${parseStockNumber(row[2])}`;
+        });
+        const pages = [];
+        let current = [];
+        let currentLength = 0;
+        for (const line of colorLines) {
+            if (currentLength + line.length + 1 > 3200 && current.length) {
+                pages.push(current);
+                current = [];
+                currentLength = 0;
+            }
+            current.push(line);
+            currentLength += line.length + 1;
+        }
+        if (current.length || pages.length === 0) pages.push(current);
+
+        pages.forEach((pageLines, index) => {
+            const pageSuffix = pages.length > 1 ? ` · Página ${index + 1}/${pages.length}` : "";
+            const description = `${header}\n\n**Stock por cor**\n${pageLines.length ? pageLines.join("\n") : "Sem cores registadas."}`;
+            embeds.push(new EmbedBuilder()
+                .setColor(bundles > 0 ? 0x2ecc71 : 0xe74c3c)
+                .setTitle(`🦖 ${name}${pageSuffix}`.slice(0, 256))
+                .setDescription(description.slice(0, 4096))
+                .setFooter({ text: `${DASHBOARD_MARKER} • Atualização automática a cada 30 minutos` })
+                .setTimestamp());
+        });
+    }
+
+    if (embeds.length === 0) {
+        embeds.push(new EmbedBuilder()
+            .setTitle("📦 Dashboard de Stock")
+            .setDescription("Ainda não existem espécies registadas no Google Sheets.")
+            .setFooter({ text: `${DASHBOARD_MARKER} • Atualização automática a cada 30 minutos` })
+            .setTimestamp());
+    }
+    return embeds;
+}
+
+async function refreshDashboard() {
+    if (dashboardRefreshInProgress || !client.isReady() || !sheetsClient || !SHEET_ID) return;
+    dashboardRefreshInProgress = true;
+    try {
+        const guild = await client.guilds.fetch(GUILD_ID);
+        await guild.channels.fetch();
+        const channel = guild.channels.cache.find(c =>
+            c.isTextBased() && c.name.toLowerCase().includes(DASHBOARD_CHANNEL_NAME));
+        if (!channel || !channel.messages) {
+            console.warn('Dashboard: canal "⛔│「dashboard」" não encontrado ou não é um canal de texto.');
+            return;
+        }
+
+        const embeds = await buildDashboardEmbeds();
+        const groups = [];
+        for (let i = 0; i < embeds.length; i += 10) groups.push(embeds.slice(i, i + 10));
+
+        const recent = await channel.messages.fetch({ limit: 100 });
+        const existing = [...recent.values()]
+            .filter(message => message.author.id === client.user.id &&
+                message.embeds.some(embed => (embed.footer?.text || "").includes(DASHBOARD_MARKER)))
+            .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+        for (let i = 0; i < groups.length; i++) {
+            if (existing[i]) await existing[i].edit({ content: "", embeds: groups[i] });
+            else await channel.send({ embeds: groups[i] });
+        }
+        for (let i = groups.length; i < existing.length; i++) {
+            await existing[i].delete().catch(() => {});
+        }
+        console.log(`Dashboard atualizado em #${channel.name}: ${embeds.length} painel(is)/espécie(s).`);
+    } catch (error) {
+        console.error("Erro ao atualizar dashboard de stock:", error);
+    } finally {
+        dashboardRefreshInProgress = false;
+    }
+}
+
 async function getStockData() {
     const species = await getSpeciesSheets();
     const data = [];
@@ -140,6 +262,9 @@ async function updateStockSheet() {
         valueInputOption: "USER_ENTERED",
         resource: { values }
     });
+
+    // Atualiza o Discord logo após alterações de stock; continua também a atualizar de 30 em 30 min.
+    if (client.isReady()) await refreshDashboard();
 }
 
 function isStaff(interaction) {
@@ -1371,6 +1496,10 @@ client.once("clientReady", async () => {
     await initSheets();
     await registerCommands();
     await ensureTicketPanel();
+    await refreshDashboard();
+    setInterval(() => {
+        refreshDashboard().catch(error => console.error("Erro no refresh periódico do dashboard:", error));
+    }, 30 * 60 * 1000);
 });
 
 // Evita que o bot crashe com erros inesperados
