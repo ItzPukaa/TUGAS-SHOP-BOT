@@ -4,7 +4,12 @@ import fs from "fs";
 import { REST, Routes } from "discord.js";
 
 const STAFF_ROLE_ID = "1389265558171684904";
-const config = JSON.parse(fs.readFileSync("./config.json", "utf8"));
+const credentials = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, "utf8"));
+const config = {
+    token: process.env.TOKEN,
+    sheetId: process.env.SHEET_ID,
+    staffRoleId: process.env.STAFF_ROLE_ID
+};
 
 const client = new Client({
     intents: [
