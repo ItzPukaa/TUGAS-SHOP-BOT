@@ -85,7 +85,8 @@ let catalogRefreshRunning = false;
 // ===========================================================
 const TRADINGPOST_SHEET = "TradingPost";   // registo de cada order (cor, número, estado, staff)
 const FRIDGES_SHEET = "Fridges";           // lista de cores/números de fridges (gerida por /addfridges, /editfridges, /delfridges)
-const ORDERS_LOG_CHANNEL_NAME = "orders-logs"; // canal onde ficam TODAS as orders
+const ORDERS_CHANNEL_NAME = "orders";          // canal das orders ATIVAS (claim, fridge, PIN, ready, collected)
+const ORDERS_LOG_CHANNEL_NAME = "orders-logs"; // canal de HISTÓRICO: só recebe orders concluídas (depois do Collected)
 const FRIDGE_DEFAULT_COUNT = 10;           // por defeito cada cor nova tem #01 … #10
 const FRIDGE_MAX_NUMBER = 99;              // maior número permitido
 const FRIDGE_MAX_PER_COLOR = 25;           // limite de opções de um menu do Discord
@@ -661,6 +662,14 @@ function findTextChannel(guild, namePart) {
         c.type === ChannelType.GuildText && c.name.toLowerCase().includes(namePart));
 }
 
+// Canal das orders ativas: nome contém "orders" mas NÃO é o canal de logs
+function findOrdersChannel(guild) {
+    return guild.channels.cache.find(c =>
+        c.type === ChannelType.GuildText &&
+        c.name.toLowerCase().includes(ORDERS_CHANNEL_NAME) &&
+        !c.name.toLowerCase().includes("log"));
+}
+
 // Botão que abre o ticket diretamente (reutiliza o handler "t_open")
 function openTicketRow() {
     return new ActionRowBuilder().addComponents(
@@ -840,7 +849,7 @@ async function registerCommands() {
             .setName("addfridges")
             .setDescription("Add a fridge color, or add numbers to an existing color")
             .addStringOption(o => o.setName("color").setDescription("Fridge color").setRequired(true).setAutocomplete(true))
-            .addStringOption(o => o.setName("numbers").setDescription("Numbers to add, e.g. 1-10, 11 or 1,2,5 (default: 1-10)")),
+            .addStringOption(o => o.setName("numbers").setDescription("A single number N creates #1…#N (e.g. 10). Or use a range/list: 5-8 or 1,2,5 (default: 10)")),
 
         new SlashCommandBuilder()
             .setName("editfridges")
@@ -1384,11 +1393,18 @@ client.on("interactionCreate", async (interaction) => {
                 return interaction.editReply("🔴 Invalid color name (max 40 characters, no `|`).");
             }
             // Sem "numbers" → #01 … #10
-            const nums = numbersRaw
-                ? parseNumbers(numbersRaw)
-                : Array.from({ length: FRIDGE_DEFAULT_COUNT }, (_, n) => n + 1);
+            // Um único número N (ex.: "10" ou "#10") → cria SEGUIDO #01, #02 … #N
+            // Intervalos/listas ("5-8", "1,2,5") continuam a ser usados tal e qual
+            const singleMatch = numbersRaw?.trim().match(/^#?(\d{1,2})$/);
+            const nums = singleMatch
+                ? (parseInt(singleMatch[1], 10) >= 1 && parseInt(singleMatch[1], 10) <= FRIDGE_MAX_NUMBER
+                    ? Array.from({ length: parseInt(singleMatch[1], 10) }, (_, n) => n + 1)
+                    : null)
+                : numbersRaw
+                    ? parseNumbers(numbersRaw)
+                    : Array.from({ length: FRIDGE_DEFAULT_COUNT }, (_, n) => n + 1);
             if (!nums) {
-                return interaction.editReply(`🔴 Invalid numbers. Use for example \`1-10\`, \`11\` or \`1,2,5\` (values from 1 to ${FRIDGE_MAX_NUMBER}).`);
+                return interaction.editReply(`🔴 Invalid numbers. Use for example \`10\` (creates #1…#10), \`5-8\` or \`1,2,5\` (values from 1 to ${FRIDGE_MAX_NUMBER}).`);
             }
 
             const fridges = await getFridges();
@@ -2096,14 +2112,14 @@ async function createStaffOrder(i, st) {
         });
     }
 
-    // [PARTE 3] Canal onde ficam TODAS as orders (verificado ANTES de descontar stock)
+    // [PARTE 3] Canal das orders ativas (verificado ANTES de descontar stock)
     await i.guild.channels.fetch();
-    const logsChannel = findTextChannel(i.guild, ORDERS_LOG_CHANNEL_NAME);
+    const logsChannel = findOrdersChannel(i.guild);
     const canSend = logsChannel?.permissionsFor(client.user)?.has([
         PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks
     ]);
     if (!logsChannel || !canSend) {
-        console.error('Orders log channel "⛔│「orders-logs」" not found or the bot cannot write in it.');
+        console.error('Orders channel (name containing "orders", not "logs") not found or the bot cannot write in it.');
         return i.followUp({
             content: "🔴 Could not complete the order right now. Please contact staff.",
             flags: MessageFlags.Ephemeral
@@ -2418,8 +2434,8 @@ async function handleOrderComponent(i) {
         await orderMsg.edit({ embeds: [updated], components: [staffOrderRow({ ...state, fridgeSet: true })] });
 
         await updateTradingPostRow(orderMsg.id, { color, number }).catch(err => console.error("TradingPost update error:", err));
-        await logOrderEvent(orderMsg, `🧊 ${i.user} set the fridge to **${color} ${number}** (now occupied).`);
-        return i.editReply({ content: `🟢 Fridge set to **${color} ${number}**.`, components: [] });
+        // Sucesso silencioso: só fecha o menu efémero (mensagens só em caso de erro)
+        return i.deleteReply().catch(() => {});
     }
 
     /* ---------- Botões da mensagem da order ---------- */
@@ -2521,10 +2537,61 @@ async function handleOrderComponent(i) {
 
         const color = getEmbedField(embed, F_COLOR);
         const number = getEmbedField(embed, F_NUMBER);
+        const ticketId = (getEmbedField(embed, F_TICKET) || "").match(/\d+/)?.[0];
         const updated = setEmbedField(EmbedBuilder.from(embed), F_STATUS, "⚪ Completed — collected");
-        await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, ready: true, collected: true })] });
+
         await updateTradingPostRow(i.message.id, { status: "Completed" }).catch(err => console.error("TradingPost update error:", err));
-        return logOrderEvent(i.message, `📤 ${i.user} marked this order as collected — fridge **${color} ${number}** is free again.`);
+
+        // 1) Histórico: copia a order concluída para o canal orders-logs
+        let archived = false;
+        try {
+            await i.guild.channels.fetch();
+            const historyChannel = findTextChannel(i.guild, ORDERS_LOG_CHANNEL_NAME);
+            if (historyChannel) {
+                const history = EmbedBuilder.from(updated)
+                    .setTitle("🧾 Completed order")
+                    .addFields({ name: "📤 Collected by", value: `${i.user}`, inline: true })
+                    .setTimestamp();
+                await historyChannel.send({ embeds: [history], allowedMentions: { parse: [] } });
+                archived = true;
+            } else {
+                console.warn("Orders history channel (orders-logs) not found.");
+            }
+        } catch (err) {
+            console.error("Could not write to the orders history channel:", err);
+        }
+
+        // 2) Remove a order (e as respostas de log) do canal das orders ativas
+        let removed = false;
+        if (archived) {
+            try {
+                const recent = await i.channel.messages.fetch({ limit: 100 });
+                const replies = recent.filter(m => m.reference?.messageId === i.message.id);
+                if (replies.size) await i.channel.bulkDelete(replies, true).catch(() => {});
+                await i.message.delete();
+                removed = true;
+            } catch (err) {
+                console.error("Could not remove the order from the orders channel:", err);
+            }
+        }
+        if (!removed) {
+            // Sem canal de histórico ou sem permissões para apagar: mantém a order, marcada como concluída
+            await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, ready: true, collected: true })] }).catch(() => {});
+            await logOrderEvent(i.message, `📤 ${i.user} marked this order as collected — fridge **${color} ${number}** is free again.` +
+                (archived ? " ⚠️ Could not remove this message (check Manage Messages permission)." : " ⚠️ Could not find the orders-logs channel."));
+        }
+
+        // 3) Fecha o ticket do cliente (ticket-...)
+        if (ticketId) {
+            const ticketChannel = await i.guild.channels.fetch(ticketId).catch(() => null);
+            // Segurança: só fecha canais que sejam mesmo tickets
+            if (ticketChannel && ticketChannel.topic?.startsWith("ticket:")) {
+                tickets.delete(ticketChannel.id);
+                await ticketChannel.send("🔒 Order collected — thank you! Closing this ticket in 5 seconds...").catch(() => {});
+                setTimeout(() => ticketChannel.delete().catch(console.error), 5000);
+            }
+        }
+        return;
     }
 
     // Order ready → DM ao cliente
@@ -2558,8 +2625,8 @@ async function handleModalSubmit(i) {
 
     await i.deferUpdate();
     const updated = setEmbedField(EmbedBuilder.from(embed), F_PIN, pin);
-    await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, pinSet: true })] });
-    return logOrderEvent(i.message, `🔑 ${i.user} set the PIN.`); // o PIN não é escrito no log
+    // Sucesso silencioso: só atualiza o embed (sem mensagens por baixo)
+    return i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, pinSet: true })] });
 }
 
 /* ---------- Mensagem "order ready" (imagem do servidor + texto por baixo) ---------- */
