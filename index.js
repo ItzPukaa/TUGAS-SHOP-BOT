@@ -106,7 +106,6 @@ const UNCLAIMED = "— Unclaimed";
 // Se o ficheiro não existir, a DM é enviada na mesma, apenas sem imagem.
 const DM_BANNER_FILE = fileURLToPath(new URL("./assets/tugas-banner.png", import.meta.url));
 const DM_BANNER_NAME = "tugas-banner.png";
-const PIN_PLACEHOLDER = "⏳ Not set yet";
 
 async function initSheets() {
     const authClient = await auth.getClient();
