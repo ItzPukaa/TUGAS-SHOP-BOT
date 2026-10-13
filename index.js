@@ -85,8 +85,18 @@ let catalogRefreshRunning = false;
 // ===========================================================
 const TRADINGPOST_SHEET = "TradingPost";   // registo de cada order (cor, número, estado, staff)
 const FRIDGES_SHEET = "Fridges";           // lista de cores/números de fridges (gerida por /addfridges, /editfridges, /delfridges)
-const ORDERS_CHANNEL_NAME = "orders";          // canal das orders ATIVAS (claim, fridge, PIN, ready, collected)
 const ORDERS_LOG_CHANNEL_NAME = "orders-logs"; // canal de HISTÓRICO: só recebe orders concluídas (depois do Collected)
+const ORDER_CHANNEL_PREFIX = "order-";         // cada order ativa tem o seu canal: order-NomeDoCliente
+const ORDERS_CATEGORY_ID = "1546318549713424414";               // (opcional) categoria onde nascem as orders por reclamar; se null usa a categoria dos tickets
+
+// Staff -> categoria onde ficam os canais das orders que ele fez claim (ID do user : ID da categoria).
+// Se um staff não estiver aqui, o canal da order fica onde está depois do claim.
+const STAFF_CATEGORIES = {
+    "393074788492509194": "1559617927932551260",
+    "405342987950882816": "1559618524589326406",
+    "363446050779955212": "1559618324457848913",
+    "380408356793483265": "1559618169922912286"
+};
 const FRIDGE_DEFAULT_COUNT = 10;           // por defeito cada cor nova tem #01 … #10
 const FRIDGE_MAX_NUMBER = 99;              // maior número permitido
 const FRIDGE_MAX_PER_COLOR = 25;           // limite de opções de um menu do Discord
@@ -99,7 +109,7 @@ const F_NUMBER = "🧊 Fridge Number";
 const F_PIN = "🔑 PIN";
 const F_STATUS = "📌 Status";
 const F_TICKET = "Customer ticket";
-const F_CLAIM = "👤 Claimed by";           // INTERNO: só aparece no canal de logs (staff)
+const F_CLAIM = "👤 Claimed by";           // INTERNO: só aparece nos canais das orders (staff)
 const PIN_PLACEHOLDER = "⏳ Not set yet";
 const UNCLAIMED = "— Unclaimed";
 
@@ -193,28 +203,9 @@ async function getSpeciesSheets() {
 }
 
 async function getBundlesForSpecies(sheetName) {
-    const res = await sheetsClient.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: `${q(sheetName)}!A2:C`
-    });
-
-    const rows = (res.data.values || []).filter(r => (r[0] || "").trim() !== "");
-
-    // Sem cores = sem bundles
-    if (rows.length === 0) return 0;
-
-    // Um bundle precisa de 1 macho + 1 fêmea de CADA cor,
-    // por isso o limite é a cor com menos stock.
-    let bundles = Infinity;
-
-    for (const row of rows) {
-        const male = parseInt(row[1] || "0", 10);
-        const female = parseInt(row[2] || "0", 10);
-        const pairs = Math.min(isNaN(male) ? 0 : male, isNaN(female) ? 0 : female);
-        bundles = Math.min(bundles, pairs);
-    }
-
-    return bundles;
+    const colors = await getColorStock(sheetName);
+    // Um bundle precisa de 1 macho + 1 fêmea de CADA cor → o limite é a cor com menos pares (sem cores = 0 bundles)
+    return colors.length ? Math.min(...colors.map(c => Math.min(c.male, c.female))) : 0;
 }
 
 // 🔴 sem stock | 🟠 último bundle | 🟡 2 bundles | 🟢 3 ou mais
@@ -266,6 +257,18 @@ function isStaff(interaction) {
     return interaction.member?.roles?.cache?.has(STAFF_ROLE_ID);
 }
 
+// Resposta efémera (só quem clicou vê): usa followUp se já houve reply/defer
+function ephemeralReply(i, content) {
+    const opts = { content, flags: MessageFlags.Ephemeral };
+    return (i.deferred || i.replied) ? i.followUp(opts) : i.reply(opts);
+}
+
+// Apaga um canal (ticket/order) passados alguns segundos
+function deleteChannelLater(channel, ms = 5000) {
+    tickets.delete(channel.id);
+    setTimeout(() => channel.delete().catch(console.error), ms);
+}
+
 // Devolve o sheetId numérico de uma folha (necessário para apagar)
 async function getSheetId(sheetName) {
     const res = await sheetsClient.spreadsheets.get({ spreadsheetId: SHEET_ID });
@@ -293,6 +296,11 @@ async function deleteRow(sheetName, rowIndex) {
             }]
         }
     });
+}
+
+// Índice da linha de uma cor (ignora o cabeçalho). -1 se não existir
+function findColorRow(rows, color) {
+    return rows.findIndex((r, n) => n > 0 && (r[0] || "").trim().toLowerCase() === color.toLowerCase());
 }
 
 // Lista as cores (coluna A) de uma espécie
@@ -397,8 +405,7 @@ async function refreshDashboard() {
     try {
         const guild = await client.guilds.fetch(GUILD_ID);
         await guild.channels.fetch();
-        const channel = guild.channels.cache.find(c =>
-            c.type === ChannelType.GuildText && c.name.toLowerCase().includes(DASHBOARD_CHANNEL_NAME));
+        const channel = findTextChannel(guild, DASHBOARD_CHANNEL_NAME);
         if (!channel) {
             console.warn("Dashboard channel not found. Create a channel with a name like ⛔│「dashboard」.");
             return;
@@ -482,12 +489,10 @@ async function handleDashboardComponent(i) {
             valueInputOption: "USER_ENTERED",
             resource: { values: [[dashboardColor, dashboardGender === "m" ? next : male, dashboardGender === "f" ? next : female]] }
         });
-        await updateStockSheet();
-        await refreshDashboard();
+        await updateStockSheet(); // já atualiza a dashboard
     } catch (err) {
         console.error("Error in dashboard stock control:", err);
-        if (i.deferred || i.replied) await i.followUp({ content: `🔴 ${err.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
-        else await i.reply({ content: `🔴 ${err.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+        await ephemeralReply(i, `🔴 ${err.message}`).catch(() => {});
     }
     return true;
 }
@@ -506,6 +511,10 @@ async function saveTradingPostOrder({ messageId, userId, username }) {
         resource: { values: [[date, messageId, userId, username, "", "", "Pending", ""]] }
     });
 }
+
+// Atalho: atualiza a linha e só regista o erro (nunca bloqueia o fluxo da order)
+const tpUpdate = (messageId, data) =>
+    updateTradingPostRow(messageId, data).catch(err => console.error("TradingPost update error:", err));
 
 // Atualiza fridge/estado/staff de uma order (procura a linha pelo ID da mensagem da order)
 async function updateTradingPostRow(messageId, { color, number, status, staff } = {}) {
@@ -660,14 +669,6 @@ async function releaseFridge(orderId) {
 function findTextChannel(guild, namePart) {
     return guild.channels.cache.find(c =>
         c.type === ChannelType.GuildText && c.name.toLowerCase().includes(namePart));
-}
-
-// Canal das orders ativas: nome contém "orders" mas NÃO é o canal de logs
-function findOrdersChannel(guild) {
-    return guild.channels.cache.find(c =>
-        c.type === ChannelType.GuildText &&
-        c.name.toLowerCase().includes(ORDERS_CHANNEL_NAME) &&
-        !c.name.toLowerCase().includes("log"));
 }
 
 // Botão que abre o ticket diretamente (reutiliza o handler "t_open")
@@ -985,7 +986,7 @@ client.on("interactionCreate", async (interaction) => {
         // Componentes da dashboard e do sistema de tickets
         if (interaction.isButton() || interaction.isStringSelectMenu()) {
             if (interaction.customId?.startsWith("dash_")) return handleDashboardComponent(interaction);
-            // [PARTE 3] Botões/menus das orders (canal de logs): claim, fridge, PIN, ready
+            // [PARTE 3] Botões/menus dos canais das orders (order-...): claim, fridge, PIN, ready, collected
             if (interaction.customId?.startsWith("o_")) return handleOrderComponent(interaction);
             return handleTicketComponent(interaction);
         }
@@ -1101,8 +1102,7 @@ client.on("interactionCreate", async (interaction) => {
 
             dashboardSpecies = especie;
             dashboardColor = color;
-            await updateStockSheet();
-            await refreshDashboard();
+            await updateStockSheet(); // já atualiza a dashboard
 
             return interaction.editReply(`🟢 Color **${color}** added to **${especie}** with zero stock. Use the dashboard buttons to add quantity.`);
         }
@@ -1193,14 +1193,7 @@ client.on("interactionCreate", async (interaction) => {
             });
             const rows = res.data.values || [];
 
-            // Começa em 1 para nunca apagar o cabeçalho (linha 0)
-            let rowIndex = -1;
-            for (let i = 1; i < rows.length; i++) {
-                if ((rows[i][0] || "").trim().toLowerCase() === color.toLowerCase()) {
-                    rowIndex = i;
-                    break;
-                }
-            }
+            const rowIndex = findColorRow(rows, color);
 
             if (rowIndex === -1) {
                 return interaction.editReply(`🔴 The color **${color}** doesn't exist in **${especie}**.`);
@@ -1343,14 +1336,7 @@ client.on("interactionCreate", async (interaction) => {
             });
             const rows = res.data.values || [];
 
-            // Começa em 1 para nunca editar o cabeçalho
-            let rowIndex = -1;
-            for (let i = 1; i < rows.length; i++) {
-                if ((rows[i][0] || "").trim().toLowerCase() === color.toLowerCase()) {
-                    rowIndex = i;
-                    break;
-                }
-            }
+            const rowIndex = findColorRow(rows, color);
 
             if (rowIndex === -1) {
                 return interaction.editReply(`🔴 The color **${color}** doesn't exist in **${especie}**.`);
@@ -1596,9 +1582,7 @@ client.on("interactionCreate", async (interaction) => {
         try {
             // Em botões/menus não editamos a mensagem (perdia o carrinho)
             if (interaction.isMessageComponent() || interaction.isModalSubmit()) {
-                const opts = { content: msg, flags: MessageFlags.Ephemeral };
-                if (interaction.deferred || interaction.replied) await interaction.followUp(opts);
-                else await interaction.reply(opts);
+                await ephemeralReply(interaction, msg);
                 return;
             }
 
@@ -1617,7 +1601,6 @@ client.on("interactionCreate", async (interaction) => {
    SISTEMA DE TICKETS
 ------------------------------------------------------------*/
 let TICKET_CATEGORY_ID = null;  // definido automaticamente pela categoria do canal open-a-ticket
-const STAFF_CATEGORY_ID = null;   // (opcional) ID da categoria dos pedidos para a staff
 const PAYPAL_SYMBOL = "€";
 
 // Estado de cada ticket aberto: channelId -> { userId, payment, mode, species, color, cart }
@@ -1678,6 +1661,18 @@ function cartQty(st, species, color, gender) {
     const it = st.cart.find(c =>
         c.type === "dino" && c.species === species && c.color === color && c.gender === gender);
     return it ? it.qty : 0;
+}
+
+// Quantos ♂ e ♀ da cor escolhida ainda se podem adicionar (stock menos o que já está no carrinho)
+async function availability(st) {
+    const c = (await getColorStock(st.species)).find(x => x.color === st.color);
+    const pairs = st.cart
+        .filter(x => x.type === "pair" && x.species === st.species && x.color === st.color)
+        .reduce((sum, x) => sum + x.qty, 0);
+    return {
+        m: (c?.male ?? 0) - cartQty(st, st.species, st.color, "m") - pairs,
+        f: (c?.female ?? 0) - cartQty(st, st.species, st.color, "f") - pairs
+    };
 }
 
 // Calcula linhas e total do carrinho com o método de pagamento escolhido
@@ -1793,7 +1788,7 @@ async function bundleScreen(st) {
         embeds: [new EmbedBuilder()
             .setTitle(`📦 Bundle — ${st.species}`)
             .setDescription(
-                `Available: **${bundles}** ${stockBall(bundles)}\n` +
+                `Availability: ${stockBall(bundles)}\n` +
                 `Price per bundle: **${priceText(prices, st.payment, "bundle")}**`
             )],
         components: [
@@ -1821,12 +1816,12 @@ async function colorScreen(st) {
     const stock = await getColorStock(st.species);
     const prices = await getPrices(st.species);
 
-    const lines = stock.map(c => `**${c.color}** — ♂ ${c.male} · ♀ ${c.female}`);
+    const lines = stock.map(c => `**${c.color}** — ♂ ${stockBall(c.male)} · ♀ ${stockBall(c.female)}`);
     const available = stock.filter(c => c.male > 0 || c.female > 0).slice(0, 25);
 
     const embed = new EmbedBuilder()
         .setTitle(`🦖 ${st.species} — Stock by color`)
-        .setDescription(lines.length ? lines.join("\n") : "No colors registered.")
+        .setDescription(lines.length ? `${lines.join("\n")}\n\n🟢 In stock · 🟡 Running low · 🟠 Almost gone · 🔴 Out of stock` : "No colors registered.")
         .setFooter({ text: `Pair: ${priceText(prices, st.payment, "pair")} • Dino: ${priceText(prices, st.payment, "dino")}` });
 
     const components = [];
@@ -1838,7 +1833,7 @@ async function colorScreen(st) {
                 .addOptions(available.map(c => ({
                     label: c.color.slice(0, 100),
                     value: c.color.slice(0, 100),
-                    description: `♂ ${c.male} · ♀ ${c.female}`
+                    description: `♂ ${stockBall(c.male)} · ♀ ${stockBall(c.female)}`
                 })))
         ));
     } else {
@@ -1850,14 +1845,8 @@ async function colorScreen(st) {
 }
 
 async function genderScreen(st) {
-    const stock = await getColorStock(st.species);
     const prices = await getPrices(st.species);
-    const c = stock.find(x => x.color === st.color);
-    const pairsInCart = st.cart
-        .filter(x => x.type === "pair" && x.species === st.species && x.color === st.color)
-        .reduce((sum, x) => sum + x.qty, 0);
-    const m = (c?.male ?? 0) - cartQty(st, st.species, st.color, "m") - pairsInCart;
-    const f = (c?.female ?? 0) - cartQty(st, st.species, st.color, "f") - pairsInCart;
+    const { m, f } = await availability(st);
 
     return {
         content: "",
@@ -1869,12 +1858,11 @@ async function genderScreen(st) {
                 `Single dino: **${priceText(prices, st.payment, "dino")}**`
             )],
         components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId("t_gender_m").setLabel(`♂ Male (${Math.max(m, 0)})`)
+            new ButtonBuilder().setCustomId("t_gender_m").setLabel(`♂ Male ${stockBall(m)}`)
                 .setStyle(ButtonStyle.Primary).setDisabled(m <= 0),
-            new ButtonBuilder().setCustomId("t_gender_f").setLabel(`♀ Female (${Math.max(f, 0)})`)
+            new ButtonBuilder().setCustomId("t_gender_f").setLabel(`♀ Female ${stockBall(f)}`)
                 .setStyle(ButtonStyle.Primary).setDisabled(f <= 0),
-            new ButtonBuilder().setCustomId("t_gender_pair")
-                .setLabel(`Pair (♂ + ♀)`)
+            new ButtonBuilder().setCustomId("t_gender_pair").setLabel("Pair (♂ + ♀)")
                 .setStyle(ButtonStyle.Success).setDisabled(m <= 0 || f <= 0),
             backButton(),
             cancelButton()
@@ -1961,9 +1949,9 @@ function orderState(embed) {
 function staffOrderRow({ claimerId = null, fridgeSet = false, pinSet = false, ready = false, collected = false } = {}) {
     const claimed = !!claimerId;
     return new ActionRowBuilder().addComponents(
-        // Claim / Release (alterna)
-        new ButtonBuilder().setCustomId("o_claim").setLabel(claimed ? "Release" : "Claim")
-            .setEmoji(claimed ? "↩️" : "🙋").setStyle(claimed ? ButtonStyle.Secondary : ButtonStyle.Primary).setDisabled(ready),
+        // Claim: depois de feito fica bloqueado (não há release nem re-claim por outro staff)
+        new ButtonBuilder().setCustomId("o_claim").setLabel(claimed ? "Claimed" : "Claim")
+            .setEmoji(claimed ? "🔒" : "🙋").setStyle(claimed ? ButtonStyle.Secondary : ButtonStyle.Primary).setDisabled(claimed),
         // Escolher cor + número do fridge (só depois de claim)
         new ButtonBuilder().setCustomId("o_fridge").setLabel(fridgeSet ? "Change fridge" : "Set fridge")
             .setEmoji("🧊").setStyle(ButtonStyle.Primary).setDisabled(!claimed || ready),
@@ -2084,7 +2072,8 @@ async function deductStockForCart(st) {
         const newMale = male - delta.male;
         const newFemale = female - delta.female;
         if (newMale < 0 || newFemale < 0) {
-            throw new Error(`Not enough stock for ${delta.species} — ${color}. Available: ♂ ${male}, ♀ ${female}.`);
+            console.error(`Not enough stock for ${delta.species} — ${color}. Available: ♂ ${male}, ♀ ${female}.`);
+            throw new Error(`Not enough stock for ${delta.species} — ${color}. Someone may have just bought it, please review your cart.`);
         }
         updates.push({
             range: `${q(delta.species)}!A${delta.rowIndex + 1}:C${delta.rowIndex + 1}`,
@@ -2101,7 +2090,22 @@ async function deductStockForCart(st) {
     await updateStockSheet();
 }
 
-/* ---------- Pedido para a staff (tudo no canal orders-logs) ---------- */
+/* ---------- Pedido para a staff (novo canal order-NomeDoCliente) ---------- */
+// Canal privado da order (só staff + bot). Quando um staff faz claim, é movido para a categoria dele.
+function createOrderChannel(i) {
+    const allow = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory];
+    return i.guild.channels.create({
+        name: `${ORDER_CHANNEL_PREFIX}${safeName(i.user.username)}`,
+        topic: `order:${i.user.id}`,
+        parent: ORDERS_CATEGORY_ID || i.channel.parentId || undefined,
+        permissionOverwrites: [
+            { id: i.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: STAFF_ROLE_ID, allow },
+            { id: client.user.id, allow: [...allow, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.EmbedLinks] }
+        ]
+    });
+}
+
 async function createStaffOrder(i, st) {
     const { lines, total, errors } = await calcCart(st);
 
@@ -2112,22 +2116,25 @@ async function createStaffOrder(i, st) {
         });
     }
 
-    // [PARTE 3] Canal das orders ativas (verificado ANTES de descontar stock)
-    await i.guild.channels.fetch();
-    const logsChannel = findOrdersChannel(i.guild);
-    const canSend = logsChannel?.permissionsFor(client.user)?.has([
-        PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks
-    ]);
-    if (!logsChannel || !canSend) {
-        console.error('Orders channel (name containing "orders", not "logs") not found or the bot cannot write in it.');
+    // Cria o canal ANTES de descontar o stock (se falhar, nada é descontado)
+    let orderChannel;
+    try {
+        orderChannel = await createOrderChannel(i);
+    } catch (err) {
+        console.error("Could not create the order channel (check the bot's Manage Channels permission):", err);
         return i.followUp({
             content: "🔴 Could not complete the order right now. Please contact staff.",
             flags: MessageFlags.Ephemeral
         });
     }
 
-    // Desconta o stock (se falhar, o erro segue para o handler geral e nada é enviado)
-    await deductStockForCart(st);
+    // Desconta o stock (se falhar, apaga o canal e o erro segue para o handler geral)
+    try {
+        await deductStockForCart(st);
+    } catch (err) {
+        await orderChannel.delete().catch(() => {});
+        throw err;
+    }
 
     const embed = new EmbedBuilder()
         .setTitle("🧾 New order")
@@ -2147,7 +2154,7 @@ async function createStaffOrder(i, st) {
         )
         .setTimestamp();
 
-    const orderMsg = await logsChannel.send({
+    const orderMsg = await orderChannel.send({
         content: `<@&${STAFF_ROLE_ID}>`,
         embeds: [embed],
         components: [staffOrderRow()]
@@ -2186,9 +2193,7 @@ async function handleTicketComponent(i) {
             return i.reply({ content: "Only staff can close this.", flags: MessageFlags.Ephemeral });
         }
         await i.reply("🔒 Closing this channel in 5 seconds...");
-        tickets.delete(i.channelId);
-        setTimeout(() => i.channel.delete().catch(console.error), 5000);
-        return;
+        return deleteChannelLater(i.channel);
     }
 
     const st = tickets.get(i.channelId);
@@ -2205,9 +2210,7 @@ async function handleTicketComponent(i) {
 
     if (id === "t_cancel") {
         await i.reply("❌ Ticket cancelled. Closing in 5 seconds...");
-        tickets.delete(i.channelId);
-        setTimeout(() => i.channel.delete().catch(console.error), 5000);
-        return;
+        return deleteChannelLater(i.channel);
     }
 
     // A partir daqui editamos a mensagem original (evita o limite de 3s)
@@ -2257,42 +2260,19 @@ async function handleTicketComponent(i) {
         return i.editReply(await genderScreen(st));
     }
 
-    // 5) Sexo escolhido → adiciona ao carrinho
-    if (id === "t_gender_pair") {
-        const stock = await getColorStock(st.species);
-        const c = stock.find(x => x.color === st.color);
-        const alreadyPairs = st.cart
-            .filter(x => x.type === "pair" && x.species === st.species && x.color === st.color)
-            .reduce((sum, x) => sum + x.qty, 0);
-        const maleInCart = cartQty(st, st.species, st.color, "m");
-        const femaleInCart = cartQty(st, st.species, st.color, "f");
-        if (!c || c.male - maleInCart - alreadyPairs < 1 || c.female - femaleInCart - alreadyPairs < 1) {
-            return i.editReply(await genderScreen(st));
-        }
-        const existingPair = st.cart.find(x => x.type === "pair" && x.species === st.species && x.color === st.color);
-        if (existingPair) existingPair.qty += 1;
-        else st.cart.push({ type: "pair", species: st.species, color: st.color, qty: 1 });
-        return i.editReply(await summaryScreen(st));
-    }
+    // 5) Sexo (ou Pair) escolhido → adiciona ao carrinho
+    if (id === "t_gender_pair" || id === "t_gender_m" || id === "t_gender_f") {
+        const g = id.replace("t_gender_", ""); // "pair" | "m" | "f"
+        const { m, f } = await availability(st);
+        const ok = g === "pair" ? m >= 1 && f >= 1 : (g === "m" ? m : f) >= 1;
+        if (!ok) return i.editReply(await genderScreen(st));
 
-    if (id === "t_gender_m" || id === "t_gender_f") {
-        const g = id === "t_gender_m" ? "m" : "f";
-        const stock = await getColorStock(st.species);
-        const c = stock.find(x => x.color === st.color);
-        const have = (g === "m" ? c?.male : c?.female) ?? 0;
-        const pairQty = st.cart
-            .filter(x => x.type === "pair" && x.species === st.species && x.color === st.color)
-            .reduce((sum, x) => sum + x.qty, 0);
-
-        if (cartQty(st, st.species, st.color, g) + pairQty + 1 > have) {
-            return i.editReply(await genderScreen(st));
-        }
-
-        const existing = st.cart.find(x =>
-            x.type === "dino" && x.species === st.species && x.color === st.color && x.gender === g);
+        const item = g === "pair"
+            ? { type: "pair", species: st.species, color: st.color }
+            : { type: "dino", species: st.species, color: st.color, gender: g };
+        const existing = st.cart.find(x => Object.keys(item).every(k => x[k] === item[k]));
         if (existing) existing.qty += 1;
-        else st.cart.push({ type: "dino", species: st.species, color: st.color, gender: g, qty: 1 });
-
+        else st.cart.push({ ...item, qty: 1 });
         return i.editReply(await summaryScreen(st));
     }
 
@@ -2354,27 +2334,27 @@ function logOrderEvent(message, text) {
         .catch(err => console.warn("Could not write the order log:", err.message));
 }
 
-// Quem pode mexer na order: quem fez claim (ou alguém com Manage Server)
+// Quem pode mexer na order: SÓ quem fez claim (ninguém pode "roubar" uma order já claimada por outro staff)
 function canManageOrder(i, claimerId) {
-    return claimerId === i.user.id || !!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+    return !!claimerId && claimerId === i.user.id;
+}
+
+// A order ainda está aberta e pertence a quem clicou?
+function canEditOrder(i, state) {
+    return !state.ready && canManageOrder(i, state.claimerId);
 }
 
 // Valida claim/estado antes de uma ação; devolve true se a ação pode continuar
 async function guardOrderAction(i, state) {
-    if (state.ready) {
-        await i.reply({ content: "This order is already completed.", flags: MessageFlags.Ephemeral });
-        return false;
-    }
-    if (!state.claimerId) {
-        await i.reply({ content: "Claim this order first.", flags: MessageFlags.Ephemeral });
-        return false;
-    }
-    if (!canManageOrder(i, state.claimerId)) {
-        await i.reply({ content: `This order was claimed by <@${state.claimerId}>. Only they can do this.`, flags: MessageFlags.Ephemeral });
-        return false;
-    }
-    return true;
+    const problem = state.ready ? "This order is already completed."
+        : !state.claimerId ? "Claim this order first."
+        : !canManageOrder(i, state.claimerId) ? `This order was claimed by <@${state.claimerId}>. Only they can do this.`
+        : null;
+    if (problem) await i.reply({ content: problem, flags: MessageFlags.Ephemeral });
+    return !problem;
 }
+
+const claimLocks = new Set(); // orders com um claim em curso (evita 2 claims quase em simultâneo)
 
 async function handleOrderComponent(i) {
     const id = i.customId;
@@ -2416,7 +2396,7 @@ async function handleOrderComponent(i) {
         if (!orderMsg) return i.editReply({ content: "🔴 Could not find the order message.", components: [] });
 
         const state = orderState(orderMsg.embeds[0]);
-        if (state.ready || !state.claimerId || !canManageOrder(i, state.claimerId)) {
+        if (!canEditOrder(i, state)) {
             return i.editReply({ content: "🔴 You can't change this order (not claimed by you, or already completed).", components: [] });
         }
 
@@ -2433,7 +2413,7 @@ async function handleOrderComponent(i) {
         setEmbedField(updated, F_NUMBER, number);
         await orderMsg.edit({ embeds: [updated], components: [staffOrderRow({ ...state, fridgeSet: true })] });
 
-        await updateTradingPostRow(orderMsg.id, { color, number }).catch(err => console.error("TradingPost update error:", err));
+        await tpUpdate(orderMsg.id, { color, number });
         // Sucesso silencioso: só fecha o menu efémero (mensagens só em caso de erro)
         return i.deleteReply().catch(() => {});
     }
@@ -2442,34 +2422,41 @@ async function handleOrderComponent(i) {
     const embed = i.message.embeds[0];
     const state = orderState(embed);
 
-    // Claim / Release
+    // Claim: definitivo. Move o canal da order para a categoria de quem fez claim
     if (id === "o_claim") {
-        if (state.ready) {
-            return i.reply({ content: "This order is already completed.", flags: MessageFlags.Ephemeral });
-        }
+        if (state.ready) return ephemeralReply(i, "This order is already completed.");
+        if (state.claimerId) return ephemeralReply(i, `This order was already claimed by <@${state.claimerId}>.`);
+        if (claimLocks.has(i.message.id)) return ephemeralReply(i, "Someone is claiming this order right now.");
 
-        // Já tem dono: só o dono (ou Manage Server) pode libertar
-        if (state.claimerId) {
-            if (!canManageOrder(i, state.claimerId)) {
-                return i.reply({ content: `This order was already claimed by <@${state.claimerId}>.`, flags: MessageFlags.Ephemeral });
-            }
+        claimLocks.add(i.message.id);
+        try {
+            // Confirma na mensagem mais recente (dois staffs podem clicar quase ao mesmo tempo)
+            const fresh = await i.channel.messages.fetch(i.message.id);
+            const freshClaimer = orderState(fresh.embeds[0]).claimerId;
+            if (freshClaimer) return ephemeralReply(i, `This order was already claimed by <@${freshClaimer}>.`);
+
             await i.deferUpdate();
-            const updated = EmbedBuilder.from(embed);
-            setEmbedField(updated, F_CLAIM, UNCLAIMED);
-            setEmbedField(updated, F_STATUS, "🟡 Pending");
-            await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, claimerId: null })] });
-            await updateTradingPostRow(i.message.id, { status: "Pending", staff: "" }).catch(err => console.error("TradingPost update error:", err));
-            return logOrderEvent(i.message, `↩️ ${i.user} released this order.`);
-        }
+            const updated = EmbedBuilder.from(fresh.embeds[0]);
+            setEmbedField(updated, F_CLAIM, `${i.user}`);
+            setEmbedField(updated, F_STATUS, "🔵 In progress");
+            await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, claimerId: i.user.id })] });
+            await tpUpdate(i.message.id, { status: "In progress", staff: i.user.username });
 
-        // Sem dono: quem clicou fica com a order
-        await i.deferUpdate();
-        const updated = EmbedBuilder.from(embed);
-        setEmbedField(updated, F_CLAIM, `${i.user}`);
-        setEmbedField(updated, F_STATUS, "🔵 In progress");
-        await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, claimerId: i.user.id })] });
-        await updateTradingPostRow(i.message.id, { status: "In progress", staff: i.user.username }).catch(err => console.error("TradingPost update error:", err));
-        return logOrderEvent(i.message, `👤 ${i.user} claimed this order.`);
+            // Move o canal para a categoria do staff (as permissões do canal não são alteradas)
+            let note = "";
+            const categoryId = STAFF_CATEGORIES[i.user.id];
+            if (!categoryId) {
+                note = " ⚠️ No category is configured for this staff member, so the channel stays where it is.";
+            } else {
+                await i.channel.setParent(categoryId, { lockPermissions: false }).catch(err => {
+                    console.error("Could not move the order channel:", err);
+                    note = " ⚠️ Could not move this channel to your category (is it full, or is the bot missing Manage Channels?).";
+                });
+            }
+            return logOrderEvent(i.message, `👤 ${i.user} claimed this order.${note}`);
+        } finally {
+            claimLocks.delete(i.message.id);
+        }
     }
 
     // Set fridge → dropdown com as cores definidas pela staff
@@ -2518,13 +2505,11 @@ async function handleOrderComponent(i) {
         return i.showModal(modal);
     }
 
-    // Collected → o cliente já recolheu a encomenda: liberta o fridge
+    // Collected → o cliente já recolheu: liberta o fridge, guarda no histórico (orders-logs) e fecha os canais
     if (id === "o_collected") {
-        if (!state.ready || state.collected) {
-            return i.reply({ content: "This order can't be marked as collected.", flags: MessageFlags.Ephemeral });
-        }
+        if (!state.ready || state.collected) return ephemeralReply(i, "This order can't be marked as collected.");
         if (!canManageOrder(i, state.claimerId)) {
-            return i.reply({ content: `This order was claimed by <@${state.claimerId}>. Only they can do this.`, flags: MessageFlags.Ephemeral });
+            return ephemeralReply(i, `This order was claimed by <@${state.claimerId}>. Only they can do this.`);
         }
         await i.deferUpdate();
 
@@ -2540,9 +2525,9 @@ async function handleOrderComponent(i) {
         const ticketId = (getEmbedField(embed, F_TICKET) || "").match(/\d+/)?.[0];
         const updated = setEmbedField(EmbedBuilder.from(embed), F_STATUS, "⚪ Completed — collected");
 
-        await updateTradingPostRow(i.message.id, { status: "Completed" }).catch(err => console.error("TradingPost update error:", err));
+        await tpUpdate(i.message.id, { status: "Completed" });
 
-        // 1) Histórico: copia a order concluída para o canal orders-logs
+        // 1) Histórico: guarda a order concluída no canal orders-logs
         let archived = false;
         try {
             await i.guild.channels.fetch();
@@ -2550,6 +2535,8 @@ async function handleOrderComponent(i) {
             if (historyChannel) {
                 const history = EmbedBuilder.from(updated)
                     .setTitle("🧾 Completed order")
+                    // o ticket do cliente vai ser apagado → o link deixava de servir
+                    .setFields((updated.data.fields || []).filter(f => f.name !== F_TICKET))
                     .addFields({ name: "📤 Collected by", value: `${i.user}`, inline: true })
                     .setTimestamp();
                 await historyChannel.send({ embeds: [history], allowedMentions: { parse: [] } });
@@ -2561,37 +2548,24 @@ async function handleOrderComponent(i) {
             console.error("Could not write to the orders history channel:", err);
         }
 
-        // 2) Remove a order (e as respostas de log) do canal das orders ativas
-        let removed = false;
-        if (archived) {
-            try {
-                const recent = await i.channel.messages.fetch({ limit: 100 });
-                const replies = recent.filter(m => m.reference?.messageId === i.message.id);
-                if (replies.size) await i.channel.bulkDelete(replies, true).catch(() => {});
-                await i.message.delete();
-                removed = true;
-            } catch (err) {
-                console.error("Could not remove the order from the orders channel:", err);
-            }
-        }
-        if (!removed) {
-            // Sem canal de histórico ou sem permissões para apagar: mantém a order, marcada como concluída
-            await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, ready: true, collected: true })] }).catch(() => {});
-            await logOrderEvent(i.message, `📤 ${i.user} marked this order as collected — fridge **${color} ${number}** is free again.` +
-                (archived ? " ⚠️ Could not remove this message (check Manage Messages permission)." : " ⚠️ Could not find the orders-logs channel."));
-        }
-
-        // 3) Fecha o ticket do cliente (ticket-...)
+        // 2) Fecha o ticket do cliente (ticket-...)
         if (ticketId) {
             const ticketChannel = await i.guild.channels.fetch(ticketId).catch(() => null);
             // Segurança: só fecha canais que sejam mesmo tickets
             if (ticketChannel && ticketChannel.topic?.startsWith("ticket:")) {
-                tickets.delete(ticketChannel.id);
                 await ticketChannel.send("🔒 Order collected — thank you! Closing this ticket in 5 seconds...").catch(() => {});
-                setTimeout(() => ticketChannel.delete().catch(console.error), 5000);
+                deleteChannelLater(ticketChannel);
             }
         }
-        return;
+
+        // 3) Já está no histórico → apaga o canal da order
+        if (archived) {
+            return i.channel.delete().catch(err => console.error("Could not delete the order channel:", err));
+        }
+
+        // Sem histórico: mantém o canal da order, marcado como concluído (nada se perde)
+        await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, ready: true, collected: true })] }).catch(() => {});
+        return logOrderEvent(i.message, `📤 ${i.user} marked this order as collected — fridge **${color} ${number}** is free again. ⚠️ Could not write to the orders-logs channel, so this channel was kept.`);
     }
 
     // Order ready → DM ao cliente
@@ -2614,7 +2588,7 @@ async function handleModalSubmit(i) {
 
     const embed = i.message.embeds[0];
     const state = orderState(embed);
-    if (state.ready || !state.claimerId || !canManageOrder(i, state.claimerId)) {
+    if (!canEditOrder(i, state)) {
         return i.reply({ content: "🔴 You can't change this order (not claimed by you, or already completed).", flags: MessageFlags.Ephemeral });
     }
 
@@ -2706,7 +2680,7 @@ async function markOrderReady(i) {
         : ticketOk ? "🟠 Ready — DM failed, notified in ticket" : "🔴 Ready — customer NOT notified";
     const updated = setEmbedField(EmbedBuilder.from(base), F_STATUS, statusText);
     await i.editReply({ embeds: [updated], components: [staffOrderRow({ ...state, ready: true })] });
-    await updateTradingPostRow(i.message.id, { status: "Ready" }).catch(err => console.error("TradingPost update error:", err));
+    await tpUpdate(i.message.id, { status: "Ready" });
     await logOrderEvent(i.message, `✅ ${i.user} marked this order as ready (${statusText.replace(/^\S+ /, "")}).`);
 
     // 4) Feedback para a staff
@@ -2735,8 +2709,7 @@ async function publishTicketPanel(channel) {
 async function ensureTicketPanel() {
     const guild = await client.guilds.fetch(GUILD_ID);
     await guild.channels.fetch();
-    const channel = guild.channels.cache.find(c =>
-        c.isTextBased() && c.name.includes("open-a-ticket"));
+    const channel = findTextChannel(guild, TICKET_CHANNEL_NAME);
     if (!channel) {
         console.warn('Channel "📝│「open-a-ticket」" not found. Create it or check the name/permissions.');
         return;
